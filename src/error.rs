@@ -72,3 +72,52 @@ impl IntoResponse for AppError {
         (status, self.to_string()).into_response()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    use super::AppError;
+
+    // ── Display ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn no_upstream_available_display() {
+        assert_eq!(
+            AppError::NoUpstreamAvailable.to_string(),
+            "no upstream available"
+        );
+    }
+
+    #[test]
+    fn internal_error_display() {
+        let err = AppError::Internal(anyhow::anyhow!("something broke"));
+        assert!(err.to_string().contains("something broke"));
+    }
+
+    // ── IntoResponse status codes ─────────────────────────────────────────
+
+    #[test]
+    fn no_upstream_available_produces_503() {
+        let response = AppError::NoUpstreamAvailable.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn internal_error_produces_500() {
+        let err = AppError::Internal(anyhow::anyhow!("internal"));
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    // ── From impls ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn from_anyhow_error_creates_internal_variant() {
+        let anyhow_err = anyhow::anyhow!("wrapped");
+        let app_err = AppError::from(anyhow_err);
+        assert!(matches!(app_err, AppError::Internal(_)));
+        assert!(app_err.to_string().contains("wrapped"));
+    }
+}
