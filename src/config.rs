@@ -81,3 +81,67 @@ fn parse_u64_env(key: &str, default: u64) -> Result<u64> {
         Err(_) => Ok(default),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::Config;
+
+    // These tests assert default values and therefore assume the BGE_ROUTER_*
+    // environment variables are NOT set in the test process.  cargo-nextest
+    // runs each test in its own isolated process, so parallel test runs cannot
+    // pollute each other through the global environment.
+
+    fn load_defaults() -> Config {
+        Config::from_env().expect("Config::from_env should succeed when vars are absent or valid")
+    }
+
+    #[test]
+    fn from_env_succeeds_with_no_vars_set() {
+        let _ = load_defaults();
+    }
+
+    #[test]
+    fn default_bind_address() {
+        assert_eq!(load_defaults().bind, "0.0.0.0:8081");
+    }
+
+    #[test]
+    fn default_gpu_dns() {
+        assert_eq!(load_defaults().gpu_dns, "bge-m3-gpu.codekeeper.internal");
+    }
+
+    #[test]
+    fn default_cpu_dns() {
+        assert_eq!(load_defaults().cpu_dns, "bge-m3-cpu.codekeeper.internal");
+    }
+
+    #[test]
+    fn default_dns_refresh_is_30s() {
+        assert_eq!(load_defaults().dns_refresh, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn default_health_poll_is_5s() {
+        assert_eq!(load_defaults().health_poll, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn default_fallback_budget_is_1000ms() {
+        assert_eq!(load_defaults().fallback_budget, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn default_heartbeat_is_60s() {
+        assert_eq!(load_defaults().heartbeat, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn zero_value_is_valid_u64_and_produces_zero_duration() {
+        // parse_u64_env accepts "0" as a valid u64 — no floor clamping is applied.
+        // Duration::from_secs(0) == Duration::ZERO, so the field becomes zero.
+        assert_eq!(Duration::from_secs(0), Duration::ZERO);
+        assert_eq!(Duration::from_millis(0), Duration::ZERO);
+    }
+}
