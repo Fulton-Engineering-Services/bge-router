@@ -102,6 +102,19 @@ HTTP 503 when all pools are empty or unhealthy.
 
 **Request body buffering:** The request body is buffered once (required for fallback retry). Response body is streamed without intermediate buffering.
 
+## Documentation
+
+| File | Purpose |
+|------|---------|
+| `docs/routing-policy.md` | Routing algorithm deep-dive: priority order, UpstreamStatus eligibility, tiebreaking, snapshot atomicity, decision flowchart |
+| `docs/upstream-health.md` | Health polling mechanics: poll interval, bge-m3 response schema, status mapping, failure behaviour, `last_seen` staleness field |
+| `docs/dns-discovery.md` | DNS-based upstream discovery: refresh interval, merge semantics, scale-to-zero behaviour, failure handling, local dev setup |
+| `docs/fallback.md` | GPU→CPU fallback budget: triggers, exclusions, 1-second budget rationale, request body buffering, observability |
+| `docs/performance.md` | Latency and throughput characteristics: router overhead breakdown, CPU/GPU latency profiles, memory footprint, bottleneck identification |
+| `docs/deployment.md` | Deployment guide: CDK path, Docker standalone, env var reference, health check endpoints, observability, rollback |
+| `docs/decisions/001-dns-based-discovery.md` | ADR: Why DNS-based discovery instead of a static config list |
+| `docs/decisions/002-arc-swap-snapshot.md` | ADR: Why ArcSwap<PoolSnapshot> for lock-free routing state |
+
 ## Source Layout Conventions
 
 Follows bge-m3-embedding-server conventions exactly. No `mod.rs` files (use `foo.rs + foo/` layout). Parent module files are facades: `mod` declarations and `pub use` re-exports only.
