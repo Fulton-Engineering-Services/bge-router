@@ -101,3 +101,128 @@ impl UpstreamView {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use crate::config::Config;
+    use crate::state::AppState;
+    use crate::upstream::snapshot::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
+
+    fn test_config() -> Config {
+        Config {
+            bind: "0.0.0.0:8081".to_string(),
+            gpu_dns: "gpu.test.internal".to_string(),
+            cpu_dns: "cpu.test.internal".to_string(),
+            dns_refresh: Duration::from_secs(30),
+            health_poll: Duration::from_secs(5),
+            fallback_budget: Duration::from_secs(1),
+            heartbeat: Duration::from_secs(60),
+        }
+    }
+
+    fn ok_gpu_upstream(addr: &str) -> UpstreamInfo {
+        UpstreamInfo {
+            addr: addr.parse::<SocketAddr>().expect("test addr must be valid"),
+            pool_type: PoolType::Gpu,
+            status: UpstreamStatus::Ok,
+            queue_depth: 0,
+            live_workers: 8,
+            last_seen: Instant::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn empty_pool_returns_503_with_degraded_status() {
+        let state = AppState::new(test_config());
+        let app = crate::bootstrap::router::build(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/router/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], "degraded");
+        assert!(body["gpu_upstreams"].is_array());
+        assert!(body["cpu_upstreams"].is_array());
+        assert_eq!(body["gpu_upstreams"].as_array().unwrap().len(), 0);
+        assert_eq!(body["cpu_upstreams"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn ok_gpu_upstream_returns_200_with_ok_status() {
+        let state = AppState::new(test_config());
+        let snapshot = PoolSnapshot {
+            gpu: vec![ok_gpu_upstream("10.0.0.1:8081")],
+            cpu: vec![],
+            updated_at: Instant::now(),
+        };
+        state.pool.store(Arc::new(snapshot));
+
+        let app = crate::bootstrap::router::build(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/router/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], "ok");
+        assert!(body["gpu_upstreams"].is_array());
+        assert!(body["cpu_upstreams"].is_array());
+        assert_eq!(body["gpu_upstreams"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn response_body_is_valid_json_with_required_fields() {
+        let state = AppState::new(test_config());
+        let app = crate::bootstrap::router::build(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/router/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("response body must be valid JSON");
+        assert!(body.get("status").is_some(), "body must contain 'status'");
+        assert!(
+            body.get("gpu_upstreams").is_some(),
+            "body must contain 'gpu_upstreams'"
+        );
+        assert!(
+            body.get("cpu_upstreams").is_some(),
+            "body must contain 'cpu_upstreams'"
+        );
+    }
+}
