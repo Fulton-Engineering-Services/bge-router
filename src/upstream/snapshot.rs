@@ -107,3 +107,123 @@ impl Default for PoolSnapshot {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+    use std::time::Instant;
+
+    use super::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
+
+    // ── PoolSnapshot ────────────────────────────────────────────────────────
+
+    #[test]
+    fn default_snapshot_has_empty_pools() {
+        let snap = PoolSnapshot::default();
+        assert!(snap.gpu.is_empty());
+        assert!(snap.cpu.is_empty());
+    }
+
+    // ── PoolType ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn pool_type_gpu_as_str() {
+        assert_eq!(PoolType::Gpu.as_str(), "gpu");
+    }
+
+    #[test]
+    fn pool_type_cpu_as_str() {
+        assert_eq!(PoolType::Cpu.as_str(), "cpu");
+    }
+
+    #[test]
+    fn pool_type_eq() {
+        assert_eq!(PoolType::Gpu, PoolType::Gpu);
+        assert_eq!(PoolType::Cpu, PoolType::Cpu);
+        assert_ne!(PoolType::Gpu, PoolType::Cpu);
+    }
+
+    #[test]
+    fn pool_type_copy() {
+        let t = PoolType::Gpu;
+        // PoolType is Copy — assignment should not move t.
+        let copy = t;
+        assert_eq!(t, copy);
+    }
+
+    // ── UpstreamStatus::parse ───────────────────────────────────────────────
+
+    #[test]
+    fn status_ok_parses_to_ok() {
+        assert_eq!(UpstreamStatus::parse("ok"), UpstreamStatus::Ok);
+    }
+
+    #[test]
+    fn status_warn_parses_to_ok() {
+        // "warn" means some workers exited but service still accepts requests.
+        assert_eq!(UpstreamStatus::parse("warn"), UpstreamStatus::Ok);
+    }
+
+    #[test]
+    fn status_loading_parses_to_loading() {
+        assert_eq!(UpstreamStatus::parse("loading"), UpstreamStatus::Loading);
+    }
+
+    #[test]
+    fn status_idle_parses_to_loading() {
+        // "idle" means models were unloaded after timeout; treated same as loading.
+        assert_eq!(UpstreamStatus::parse("idle"), UpstreamStatus::Loading);
+    }
+
+    #[test]
+    fn status_fail_parses_to_fail() {
+        assert_eq!(UpstreamStatus::parse("fail"), UpstreamStatus::Fail);
+    }
+
+    #[test]
+    fn status_unknown_string_parses_to_unknown() {
+        assert_eq!(UpstreamStatus::parse("unknown"), UpstreamStatus::Unknown);
+        assert_eq!(UpstreamStatus::parse(""), UpstreamStatus::Unknown);
+        assert_eq!(UpstreamStatus::parse("FAIL"), UpstreamStatus::Unknown);
+        assert_eq!(UpstreamStatus::parse("OK"), UpstreamStatus::Unknown);
+    }
+
+    // ── UpstreamInfo construction ───────────────────────────────────────────
+
+    #[test]
+    fn upstream_info_fields_are_stored_correctly() {
+        let addr: SocketAddr = "10.0.0.1:8081".parse().unwrap();
+        let info = UpstreamInfo {
+            addr,
+            pool_type: PoolType::Gpu,
+            status: UpstreamStatus::Ok,
+            queue_depth: 5,
+            live_workers: 8,
+            last_seen: Instant::now(),
+        };
+        assert_eq!(info.addr, addr);
+        assert_eq!(info.pool_type, PoolType::Gpu);
+        assert_eq!(info.status, UpstreamStatus::Ok);
+        assert_eq!(info.queue_depth, 5);
+        assert_eq!(info.live_workers, 8);
+    }
+
+    #[test]
+    fn upstream_info_clones_correctly() {
+        let addr: SocketAddr = "10.0.0.2:8081".parse().unwrap();
+        let original = UpstreamInfo {
+            addr,
+            pool_type: PoolType::Cpu,
+            status: UpstreamStatus::Loading,
+            queue_depth: 0,
+            live_workers: 2,
+            last_seen: Instant::now(),
+        };
+        let cloned = original.clone();
+        assert_eq!(cloned.addr, original.addr);
+        assert_eq!(cloned.pool_type, original.pool_type);
+        assert_eq!(cloned.status, original.status);
+        assert_eq!(cloned.queue_depth, original.queue_depth);
+        assert_eq!(cloned.live_workers, original.live_workers);
+    }
+}

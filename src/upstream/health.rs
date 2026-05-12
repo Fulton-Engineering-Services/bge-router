@@ -174,3 +174,143 @@ struct BgeMHealthResponse {
 struct WorkersField {
     live: u32,
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+    use std::time::Instant;
+
+    use super::{apply_updates, BgeMHealthResponse, PollResult};
+    use crate::upstream::snapshot::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
+
+    fn unknown_gpu(addr: SocketAddr) -> UpstreamInfo {
+        UpstreamInfo {
+            addr,
+            pool_type: PoolType::Gpu,
+            status: UpstreamStatus::Unknown,
+            queue_depth: 0,
+            live_workers: 0,
+            last_seen: Instant::now(),
+        }
+    }
+
+    // ── BgeMHealthResponse JSON parsing ────────────────────────────────────
+
+    #[test]
+    fn parse_ok_with_workers_and_queue_depth() {
+        let json = r#"{"status":"ok","workers":{"live":8,"total":8},"queue_depth":3}"#;
+        let resp: BgeMHealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(UpstreamStatus::parse(&resp.status), UpstreamStatus::Ok);
+        assert_eq!(resp.workers.unwrap().live, 8);
+        assert_eq!(resp.queue_depth.unwrap(), 3);
+    }
+
+    #[test]
+    fn parse_loading_gives_loading_status_and_zero_defaults() {
+        let json = r#"{"status":"loading"}"#;
+        let resp: BgeMHealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(UpstreamStatus::parse(&resp.status), UpstreamStatus::Loading);
+        assert_eq!(resp.queue_depth.unwrap_or(0), 0);
+        assert_eq!(resp.workers.map_or(0, |w| w.live), 0);
+    }
+
+    #[test]
+    fn parse_fail_gives_fail_status() {
+        let json = r#"{"status":"fail"}"#;
+        let resp: BgeMHealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(UpstreamStatus::parse(&resp.status), UpstreamStatus::Fail);
+    }
+
+    #[test]
+    fn parse_idle_is_treated_as_loading() {
+        let json = r#"{"status":"idle"}"#;
+        let resp: BgeMHealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(UpstreamStatus::parse(&resp.status), UpstreamStatus::Loading);
+    }
+
+    #[test]
+    fn parse_warn_is_treated_as_ok() {
+        let json = r#"{"status":"warn","workers":{"live":3,"total":8}}"#;
+        let resp: BgeMHealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(UpstreamStatus::parse(&resp.status), UpstreamStatus::Ok);
+        assert_eq!(resp.workers.unwrap().live, 3);
+    }
+
+    #[test]
+    fn parse_unknown_status_string_gives_unknown() {
+        let json = r#"{"status":"something_else"}"#;
+        let resp: BgeMHealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(UpstreamStatus::parse(&resp.status), UpstreamStatus::Unknown);
+    }
+
+    #[test]
+    fn parse_invalid_json_returns_error() {
+        let result = serde_json::from_str::<BgeMHealthResponse>("not valid json");
+        assert!(result.is_err(), "invalid JSON should fail deserialization");
+    }
+
+    #[test]
+    fn parse_ok_without_workers_field_gives_zero_live_workers() {
+        let json = r#"{"status":"ok"}"#;
+        let resp: BgeMHealthResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(UpstreamStatus::parse(&resp.status), UpstreamStatus::Ok);
+        assert_eq!(resp.workers.map_or(0, |w| w.live), 0);
+        assert_eq!(resp.queue_depth.unwrap_or(0), 0);
+    }
+
+    // ── apply_updates ─────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_updates_empty_pool_stays_empty() {
+        let current = PoolSnapshot::default();
+        let results: Vec<PollResult> = vec![];
+        let updated = apply_updates(&current, &results);
+        assert!(updated.gpu.is_empty());
+        assert!(updated.cpu.is_empty());
+    }
+
+    #[test]
+    fn apply_updates_matching_result_overwrites_status_and_depth() {
+        let addr: SocketAddr = "10.0.0.1:8081".parse().unwrap();
+        let current = PoolSnapshot {
+            gpu: vec![unknown_gpu(addr)],
+            cpu: vec![],
+            updated_at: Instant::now(),
+        };
+        let results = vec![PollResult {
+            addr,
+            status: UpstreamStatus::Ok,
+            queue_depth: 7,
+            live_workers: 4,
+        }];
+        let updated = apply_updates(&current, &results);
+        assert_eq!(updated.gpu.len(), 1);
+        assert_eq!(updated.gpu[0].status, UpstreamStatus::Ok);
+        assert_eq!(updated.gpu[0].queue_depth, 7);
+        assert_eq!(updated.gpu[0].live_workers, 4);
+    }
+
+    #[test]
+    fn apply_updates_no_matching_result_leaves_upstream_unchanged() {
+        let addr: SocketAddr = "10.0.0.1:8081".parse().unwrap();
+        let other: SocketAddr = "10.0.0.99:8081".parse().unwrap();
+        let current = PoolSnapshot {
+            gpu: vec![unknown_gpu(addr)],
+            cpu: vec![],
+            updated_at: Instant::now(),
+        };
+        let results = vec![PollResult {
+            addr: other,
+            status: UpstreamStatus::Ok,
+            queue_depth: 0,
+            live_workers: 0,
+        }];
+        let updated = apply_updates(&current, &results);
+        assert_eq!(updated.gpu.len(), 1);
+        assert_eq!(
+            updated.gpu[0].status,
+            UpstreamStatus::Unknown,
+            "unmatched upstream should keep its original status"
+        );
+    }
+}
