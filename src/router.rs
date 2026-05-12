@@ -15,10 +15,13 @@
 //! Request routing sub-system.
 //!
 //! Sub-modules:
-//! - [`fallback`] — entry point: tries GPU first, falls back to CPU within budget
+//! - [`fallback`] — entry point: dispatches by [`route_policy::RoutePolicy`]
+//!   (hedged race for inference paths, sequential timeout for control plane)
 //! - [`policy`] — selects the lowest-queue-depth healthy upstream per pool type
 //! - [`proxy`] — streams a buffered request to an upstream, returns a streaming response
+//! - [`route_policy`] — classifies a request path into [`route_policy::RoutePolicy`]
 
 pub mod fallback;
 pub mod policy;
 pub mod proxy;
+pub mod route_policy;

@@ -1,6 +1,6 @@
 [package]
 name = "bge-router"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Transparent HTTP reverse proxy routing between BGE-M3 GPU and CPU upstream pools"

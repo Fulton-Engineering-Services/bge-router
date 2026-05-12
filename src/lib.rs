@@ -47,15 +47,29 @@ use std::sync::Arc;
 /// Returns an error if the config is invalid or the TCP listener fails to bind.
 pub async fn run() -> Result<()> {
     let cfg = config::Config::from_env()?;
+    let hedge_delay_ms = u64::try_from(cfg.hedge_delay.as_millis()).unwrap_or(u64::MAX);
+    let control_timeout_ms = u64::try_from(cfg.control_timeout.as_millis()).unwrap_or(u64::MAX);
     tracing::info!(
         bind = %cfg.bind,
         gpu_dns = %cfg.gpu_dns,
         cpu_dns = %cfg.cpu_dns,
         dns_refresh_secs = cfg.dns_refresh.as_secs(),
         health_poll_secs = cfg.health_poll.as_secs(),
-        fallback_budget_ms = cfg.fallback_budget.as_millis(),
+        hedge_delay_ms = hedge_delay_ms,
+        control_timeout_ms = control_timeout_ms,
         "bge-router starting"
     );
+
+    if cfg.legacy_fallback_budget_set {
+        tracing::warn!(
+            hedge_delay_ms = hedge_delay_ms,
+            "BGE_ROUTER_FALLBACK_BUDGET_MS is deprecated; \
+             new vars are BGE_ROUTER_HEDGE_DELAY_MS (inference, default 5000) \
+             and BGE_ROUTER_CONTROL_TIMEOUT_MS (control plane, default 1000). \
+             The legacy var has been honoured as the default for hedge_delay; \
+             control_timeout was NOT seeded from it. Update your deployment."
+        );
+    }
 
     let app_state = state::AppState::new(cfg);
     let pool = Arc::clone(&app_state.pool);

@@ -94,7 +94,9 @@ pointing at the same upstream.
 | `BGE_ROUTER_CPU_DNS` | `bge-m3-cpu.codekeeper.internal` | DNS name to resolve for CPU upstreams |
 | `BGE_ROUTER_DNS_REFRESH_SECS` | `30` | How often to re-resolve both DNS names; combine with Cloud Map TTL for effective staleness window |
 | `BGE_ROUTER_HEALTH_POLL_SECS` | `5` | How often to poll each upstream's `/health` endpoint |
-| `BGE_ROUTER_FALLBACK_BUDGET_MS` | `1000` | Max ms to wait for GPU upstream before trying CPU fallback |
+| `BGE_ROUTER_HEDGE_DELAY_MS` | `5000` | Inference paths only: ms to wait before firing parallel CPU race against GPU |
+| `BGE_ROUTER_CONTROL_TIMEOUT_MS` | `1000` | Control-plane paths (`/health`, `/v1/models`, etc.): per-upstream hard timeout |
+| `BGE_ROUTER_FALLBACK_BUDGET_MS` | _unset_ | **Deprecated.** When set without `BGE_ROUTER_HEDGE_DELAY_MS`, seeds `hedge_delay`; never seeds `control_timeout`. WARN logged at startup. |
 | `BGE_ROUTER_HEARTBEAT_SECS` | `60` | Heartbeat log interval in seconds; `0` disables heartbeat |
 | `BGE_ROUTER_LOG_FORMAT` | auto | `json` (default in non-TTY/container), `text`, or `pretty` |
 | `RUST_LOG` | `info` | Standard tracing filter (e.g. `bge_router=debug`) |
