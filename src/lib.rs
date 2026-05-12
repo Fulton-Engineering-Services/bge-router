@@ -23,6 +23,7 @@
 //   config      — env-var driven Config struct
 //   error       — AppError and IntoResponse impl
 //   handler/    — Axum request handlers
+//   headers     — XHeaders newtype and collect_x_headers utility
 //   logging     — tracing init; prepends "bge_module" to every JSON log line
 //   metrics     — periodic heartbeat logger
 //   router/     — routing policy, proxy, fallback
@@ -33,6 +34,7 @@ pub mod bootstrap;
 pub mod config;
 pub mod error;
 pub mod handler;
+pub mod headers;
 pub mod logging;
 pub mod metrics;
 pub mod router;

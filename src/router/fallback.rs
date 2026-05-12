@@ -37,6 +37,7 @@ use axum::{
 use bytes::Bytes;
 
 use crate::error::AppError;
+use crate::headers::collect_x_headers;
 use crate::router::{policy, proxy, route_policy::RoutePolicy};
 use crate::state::AppState;
 use crate::upstream::snapshot::PoolType;
@@ -102,6 +103,14 @@ async fn hedged_race(
     let gpu_candidate = policy::pick_gpu(&snapshot);
     let cpu_candidate = policy::pick_cpu(&snapshot);
 
+    // Collect X-* headers once; serialize to JSON for log events (None when empty).
+    let x_headers = collect_x_headers(&headers);
+    let x_headers_json: Option<String> = if x_headers.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&x_headers).unwrap_or_default())
+    };
+
     let ctx = ForwardCtx {
         method: &method,
         path_and_query,
@@ -112,11 +121,43 @@ async fn hedged_race(
     match (gpu_candidate, cpu_candidate) {
         (None, None) => Err(AppError::NoUpstreamAvailable),
         // No GPU — go straight to CPU with no hedge.
-        (None, Some((cpu_addr, _))) => forward(&state.client, cpu_addr, PoolType::Cpu, &ctx).await,
+        (None, Some((cpu_addr, _))) => {
+            let result = forward(&state.client, cpu_addr, PoolType::Cpu, &ctx).await;
+            if let Ok(ref resp) = result {
+                log_direct(
+                    path_and_query,
+                    cpu_addr,
+                    "cpu",
+                    resp.status().as_u16(),
+                    x_headers_json.as_deref(),
+                );
+            }
+            result
+        }
         // No CPU — GPU only, no hedge to fire against.
-        (Some((gpu_addr, _)), None) => forward(&state.client, gpu_addr, PoolType::Gpu, &ctx).await,
+        (Some((gpu_addr, _)), None) => {
+            let result = forward(&state.client, gpu_addr, PoolType::Gpu, &ctx).await;
+            if let Ok(ref resp) = result {
+                log_direct(
+                    path_and_query,
+                    gpu_addr,
+                    "gpu",
+                    resp.status().as_u16(),
+                    x_headers_json.as_deref(),
+                );
+            }
+            result
+        }
         (Some((gpu_addr, _)), Some((cpu_addr, _))) => {
-            run_race(state, hedge_delay, gpu_addr, cpu_addr, &ctx).await
+            run_race(
+                state,
+                hedge_delay,
+                gpu_addr,
+                cpu_addr,
+                &ctx,
+                x_headers_json.as_deref(),
+            )
+            .await
         }
     }
 }
@@ -145,6 +186,7 @@ async fn run_race(
     gpu_addr: SocketAddr,
     cpu_addr: SocketAddr,
     ctx: &ForwardCtx<'_>,
+    x_headers_json: Option<&str>,
 ) -> Result<Response, AppError> {
     let start = Instant::now();
     let cpu_started = Arc::new(AtomicBool::new(false));
@@ -179,12 +221,14 @@ async fn run_race(
         ctx.path_and_query,
         gpu_addr,
         cpu_addr,
+        x_headers_json,
     )
     .await
 }
 
 /// Drive the two pinned futures with `tokio::select!`, returning the first
 /// non-5xx response or the GPU failure when both attempts lose.
+#[allow(clippy::too_many_arguments)]
 async fn select_winner(
     gpu_fut: &mut std::pin::Pin<&mut impl Future<Output = Result<Response, AppError>>>,
     cpu_fut: &mut std::pin::Pin<&mut impl Future<Output = Result<Response, AppError>>>,
@@ -193,6 +237,7 @@ async fn select_winner(
     path_and_query: &str,
     gpu_addr: SocketAddr,
     cpu_addr: SocketAddr,
+    x_headers_json: Option<&str>,
 ) -> Result<Response, AppError> {
     let mut gpu_done = false;
     let mut cpu_done = false;
@@ -215,7 +260,7 @@ async fn select_winner(
                     } else {
                         "not_started"
                     };
-                    log_winner("GPU", path_and_query, start.elapsed(), gpu_addr, cpu_addr, loser_status);
+                    log_winner("GPU", path_and_query, start.elapsed(), gpu_addr, cpu_addr, loser_status, x_headers_json);
                     return result;
                 }
                 log_loser_attempt("GPU", gpu_addr, &result, start.elapsed());
@@ -225,7 +270,7 @@ async fn select_winner(
                 cpu_done = true;
                 if is_winner(&result) {
                     let loser_status = if gpu_done { "errored" } else { "cancelled" };
-                    log_winner("CPU", path_and_query, start.elapsed(), gpu_addr, cpu_addr, loser_status);
+                    log_winner("CPU", path_and_query, start.elapsed(), gpu_addr, cpu_addr, loser_status, x_headers_json);
                     return result;
                 }
                 log_loser_attempt("CPU", cpu_addr, &result, start.elapsed());
@@ -256,16 +301,60 @@ fn log_winner(
     gpu_addr: SocketAddr,
     cpu_addr: SocketAddr,
     loser_status: &'static str,
+    x_headers_json: Option<&str>,
 ) {
-    tracing::info!(
-        target: "bge_router::router::hedge",
-        path = %path_and_query,
-        winner_latency_ms = ms(elapsed),
-        gpu_upstream = %gpu_addr,
-        cpu_upstream = %cpu_addr,
-        loser_status = loser_status,
-        "hedge: {pool} won"
-    );
+    if let Some(xh) = x_headers_json {
+        tracing::info!(
+            target: "bge_router::router::hedge",
+            path = %path_and_query,
+            winner_latency_ms = ms(elapsed),
+            gpu_upstream = %gpu_addr,
+            cpu_upstream = %cpu_addr,
+            loser_status = loser_status,
+            x_headers = xh,
+            "hedge: {pool} won"
+        );
+    } else {
+        tracing::info!(
+            target: "bge_router::router::hedge",
+            path = %path_and_query,
+            winner_latency_ms = ms(elapsed),
+            gpu_upstream = %gpu_addr,
+            cpu_upstream = %cpu_addr,
+            loser_status = loser_status,
+            "hedge: {pool} won"
+        );
+    }
+}
+
+/// Log a direct (single-pool, no race) inference route completion.
+fn log_direct(
+    path_and_query: &str,
+    addr: SocketAddr,
+    pool: &str,
+    status: u16,
+    x_headers_json: Option<&str>,
+) {
+    if let Some(xh) = x_headers_json {
+        tracing::info!(
+            target: "bge_router::router::hedge",
+            path = %path_and_query,
+            upstream = %addr,
+            pool = pool,
+            status = status,
+            x_headers = xh,
+            "direct: {pool} response"
+        );
+    } else {
+        tracing::info!(
+            target: "bge_router::router::hedge",
+            path = %path_and_query,
+            upstream = %addr,
+            pool = pool,
+            status = status,
+            "direct: {pool} response"
+        );
+    }
 }
 
 /// A "winner" is any non-5xx response — matches the existing semantics of
