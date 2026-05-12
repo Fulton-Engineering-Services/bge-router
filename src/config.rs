@@ -19,7 +19,12 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+
+/// Default GPU→CPU hedge delay for inference routes (5 seconds).
+const DEFAULT_HEDGE_DELAY_MS: u64 = 5_000;
+/// Default per-upstream timeout for control-plane routes (1 second).
+const DEFAULT_CONTROL_TIMEOUT_MS: u64 = 1_000;
 
 /// Resolved runtime configuration derived from environment variables.
 #[derive(Debug, Clone)]
@@ -35,31 +40,76 @@ pub struct Config {
     /// How often to poll each upstream's `/health` endpoint (`BGE_ROUTER_HEALTH_POLL_SECS`,
     /// default 5).
     pub health_poll: Duration,
-    /// Maximum milliseconds to wait for a primary upstream before trying fallback
-    /// (`BGE_ROUTER_FALLBACK_BUDGET_MS`, default 1000).
-    pub fallback_budget: Duration,
+    /// Delay before firing the parallel CPU race for inference routes
+    /// (`BGE_ROUTER_HEDGE_DELAY_MS`, default 5000).  Only applies to
+    /// `/v1/*embeddings*` paths.
+    pub hedge_delay: Duration,
+    /// Per-upstream hard timeout for control-plane routes (`/health`, `/v1/models`,
+    /// etc.) — `BGE_ROUTER_CONTROL_TIMEOUT_MS`, default 1000.
+    pub control_timeout: Duration,
+    /// `true` when the deployment set the deprecated `BGE_ROUTER_FALLBACK_BUDGET_MS`
+    /// env var.  When set without the new vars, it is honoured as the default for
+    /// `hedge_delay` for safer migration; a one-time WARN is logged at startup.
+    pub legacy_fallback_budget_set: bool,
     /// Interval between periodic heartbeat log events (`BGE_ROUTER_HEARTBEAT_SECS`, default 60).
     /// Set to `0` to disable heartbeats.
     pub heartbeat: Duration,
 }
 
 impl Config {
-    /// Load configuration from environment variables.
+    /// Load configuration from process environment variables.
     ///
     /// # Errors
     ///
-    /// Returns an error if any numeric variable is present but cannot be parsed.
+    /// Returns an error if any numeric variable is present but cannot be parsed
+    /// or if a `*_MS` budget that must be positive is set to `0`.
     pub fn from_env() -> Result<Self> {
-        let bind = std::env::var("BGE_ROUTER_BIND").unwrap_or_else(|_| "0.0.0.0:8081".into());
-        let gpu_dns = std::env::var("BGE_ROUTER_GPU_DNS")
-            .unwrap_or_else(|_| "bge-m3-gpu.codekeeper.internal".into());
-        let cpu_dns = std::env::var("BGE_ROUTER_CPU_DNS")
-            .unwrap_or_else(|_| "bge-m3-cpu.codekeeper.internal".into());
+        Self::from_lookup(|key| std::env::var(key).ok())
+    }
 
-        let dns_refresh_secs = parse_u64_env("BGE_ROUTER_DNS_REFRESH_SECS", 30)?;
-        let health_poll_secs = parse_u64_env("BGE_ROUTER_HEALTH_POLL_SECS", 5)?;
-        let fallback_budget_ms = parse_u64_env("BGE_ROUTER_FALLBACK_BUDGET_MS", 1000)?;
-        let heartbeat_secs = parse_u64_env("BGE_ROUTER_HEARTBEAT_SECS", 60)?;
+    /// Load configuration from a caller-supplied lookup function.
+    ///
+    /// Tests use this to inject a deterministic environment without mutating
+    /// the process-global `std::env` state.
+    ///
+    /// # Errors
+    ///
+    /// See [`Config::from_env`].
+    pub fn from_lookup<F>(lookup: F) -> Result<Self>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
+        let bind = lookup("BGE_ROUTER_BIND").unwrap_or_else(|| "0.0.0.0:8081".into());
+        let gpu_dns =
+            lookup("BGE_ROUTER_GPU_DNS").unwrap_or_else(|| "bge-m3-gpu.codekeeper.internal".into());
+        let cpu_dns =
+            lookup("BGE_ROUTER_CPU_DNS").unwrap_or_else(|| "bge-m3-cpu.codekeeper.internal".into());
+
+        let dns_refresh_secs = parse_u64("BGE_ROUTER_DNS_REFRESH_SECS", 30, &lookup)?;
+        let health_poll_secs = parse_u64("BGE_ROUTER_HEALTH_POLL_SECS", 5, &lookup)?;
+        let heartbeat_secs = parse_u64("BGE_ROUTER_HEARTBEAT_SECS", 60, &lookup)?;
+
+        let legacy_raw = parse_optional_u64("BGE_ROUTER_FALLBACK_BUDGET_MS", &lookup)?;
+        let legacy_fallback_budget_set = legacy_raw.is_some();
+
+        // Hedge delay defaults to legacy var when present (back-compat), else
+        // DEFAULT_HEDGE_DELAY_MS.  An explicit BGE_ROUTER_HEDGE_DELAY_MS always wins.
+        let hedge_delay_ms = match parse_optional_u64("BGE_ROUTER_HEDGE_DELAY_MS", &lookup)? {
+            Some(v) => v,
+            None => legacy_raw.unwrap_or(DEFAULT_HEDGE_DELAY_MS),
+        };
+        if hedge_delay_ms == 0 {
+            bail!("invalid BGE_ROUTER_HEDGE_DELAY_MS: must be > 0 (got 0)");
+        }
+
+        let control_timeout_ms = parse_u64(
+            "BGE_ROUTER_CONTROL_TIMEOUT_MS",
+            DEFAULT_CONTROL_TIMEOUT_MS,
+            &lookup,
+        )?;
+        if control_timeout_ms == 0 {
+            bail!("invalid BGE_ROUTER_CONTROL_TIMEOUT_MS: must be > 0 (got 0)");
+        }
 
         Ok(Self {
             bind,
@@ -67,81 +117,38 @@ impl Config {
             cpu_dns,
             dns_refresh: Duration::from_secs(dns_refresh_secs),
             health_poll: Duration::from_secs(health_poll_secs),
-            fallback_budget: Duration::from_millis(fallback_budget_ms),
+            hedge_delay: Duration::from_millis(hedge_delay_ms),
+            control_timeout: Duration::from_millis(control_timeout_ms),
+            legacy_fallback_budget_set,
             heartbeat: Duration::from_secs(heartbeat_secs),
         })
     }
 }
 
-fn parse_u64_env(key: &str, default: u64) -> Result<u64> {
-    match std::env::var(key) {
-        Ok(val) => val
+fn parse_u64<F>(key: &str, default: u64, lookup: &F) -> Result<u64>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match lookup(key) {
+        Some(val) => val
             .parse::<u64>()
             .with_context(|| format!("invalid {key}: expected a non-negative integer")),
-        Err(_) => Ok(default),
+        None => Ok(default),
+    }
+}
+
+fn parse_optional_u64<F>(key: &str, lookup: &F) -> Result<Option<u64>>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match lookup(key) {
+        Some(val) => val
+            .parse::<u64>()
+            .map(Some)
+            .with_context(|| format!("invalid {key}: expected a non-negative integer")),
+        None => Ok(None),
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use super::Config;
-
-    // These tests assert default values and therefore assume the BGE_ROUTER_*
-    // environment variables are NOT set in the test process.  cargo-nextest
-    // runs each test in its own isolated process, so parallel test runs cannot
-    // pollute each other through the global environment.
-
-    fn load_defaults() -> Config {
-        Config::from_env().expect("Config::from_env should succeed when vars are absent or valid")
-    }
-
-    #[test]
-    fn from_env_succeeds_with_no_vars_set() {
-        let _ = load_defaults();
-    }
-
-    #[test]
-    fn default_bind_address() {
-        assert_eq!(load_defaults().bind, "0.0.0.0:8081");
-    }
-
-    #[test]
-    fn default_gpu_dns() {
-        assert_eq!(load_defaults().gpu_dns, "bge-m3-gpu.codekeeper.internal");
-    }
-
-    #[test]
-    fn default_cpu_dns() {
-        assert_eq!(load_defaults().cpu_dns, "bge-m3-cpu.codekeeper.internal");
-    }
-
-    #[test]
-    fn default_dns_refresh_is_30s() {
-        assert_eq!(load_defaults().dns_refresh, Duration::from_secs(30));
-    }
-
-    #[test]
-    fn default_health_poll_is_5s() {
-        assert_eq!(load_defaults().health_poll, Duration::from_secs(5));
-    }
-
-    #[test]
-    fn default_fallback_budget_is_1000ms() {
-        assert_eq!(load_defaults().fallback_budget, Duration::from_secs(1));
-    }
-
-    #[test]
-    fn default_heartbeat_is_60s() {
-        assert_eq!(load_defaults().heartbeat, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn zero_value_is_valid_u64_and_produces_zero_duration() {
-        // parse_u64_env accepts "0" as a valid u64 — no floor clamping is applied.
-        // Duration::from_secs(0) == Duration::ZERO, so the field becomes zero.
-        assert_eq!(Duration::from_secs(0), Duration::ZERO);
-        assert_eq!(Duration::from_millis(0), Duration::ZERO);
-    }
-}
+mod tests;

@@ -71,7 +71,9 @@ HTTP 503 when all pools are empty or unhealthy.
 | `BGE_ROUTER_CPU_DNS` | `bge-m3-cpu.codekeeper.internal` | DNS name for CPU upstreams |
 | `BGE_ROUTER_DNS_REFRESH_SECS` | `30` | How often to re-resolve both DNS names |
 | `BGE_ROUTER_HEALTH_POLL_SECS` | `5` | How often to poll each upstream's `/health` |
-| `BGE_ROUTER_FALLBACK_BUDGET_MS` | `1000` | Max ms to wait before trying fallback pool |
+| `BGE_ROUTER_HEDGE_DELAY_MS` | `5000` | Inference paths only: ms to wait before firing the parallel CPU race against the GPU |
+| `BGE_ROUTER_CONTROL_TIMEOUT_MS` | `1000` | Control-plane paths (`/health`, `/v1/models`, etc.): per-upstream hard timeout |
+| `BGE_ROUTER_FALLBACK_BUDGET_MS` | _unset_ | **Deprecated.** When set without `BGE_ROUTER_HEDGE_DELAY_MS`, seeds `hedge_delay`; never seeds `control_timeout`. A WARN is logged at startup. Remove once new vars are deployed. |
 | `BGE_ROUTER_HEARTBEAT_SECS` | `60` | Heartbeat log interval (`0` = disable) |
 | `BGE_ROUTER_LOG_FORMAT` | auto | `json` (non-TTY default), `text`, `pretty` |
 | `RUST_LOG` | `info` | Standard tracing filter |
@@ -95,12 +97,18 @@ HTTP 503 when all pools are empty or unhealthy.
 2. CPU upstream with `status=Ok`, lowest `queue_depth`
 3. 503 if no healthy upstream
 
-**Fallback:**
-- Try GPU primary
-- If connection refused or 5xx within `BGE_ROUTER_FALLBACK_BUDGET_MS`: try CPU fallback
-- If response bytes already streaming to client: log WARN, never retry mid-stream
+**Per-route fallback strategy** (see `docs/fallback.md` for full detail):
 
-**Request body buffering:** The request body is buffered once (required for fallback retry). Response body is streamed without intermediate buffering.
+| Route family | Strategy | Default budget |
+|---|---|---|
+| `/v1/embeddings`, `/v1/sparse-embeddings`, `/v1/embeddings:both` (any `/v1/*embeddings*`) | **Hedged race**: GPU first; after `hedge_delay`, fire CPU in parallel; first non-5xx response wins; loser's future is dropped (cancels the in-flight reqwest call so the GPU can stop computing) | `BGE_ROUTER_HEDGE_DELAY_MS=5000` |
+| `/health`, `/v1/models`, anything else | Sequential GPU → CPU with hard timeout per upstream | `BGE_ROUTER_CONTROL_TIMEOUT_MS=1000` |
+
+The hedged race exists to eliminate the "GPU theater tax" on inference: when the GPU is doing real work (or its TRT engine is cold-starting on a previously-unseen shape, which can take 50–356 s), CPU starts racing after the hedge delay rather than after a hard cancel. The loser is cancelled at the source — dropping the future closes the TCP connection so the upstream worker stops, freeing GPU-seconds and queue capacity.
+
+Control-plane routes keep the existing short hard timeout: they are cheap and idempotent, and operators want fast failure detection rather than masked latency.
+
+**Request body buffering:** The request body is buffered once (required for both the CPU race and the sequential-timeout retry). Response body is streamed without intermediate buffering. Once any bytes have been streamed to the client, retry is suppressed.
 
 ## Documentation
 
@@ -141,9 +149,10 @@ src/
     snapshot.rs    — PoolSnapshot, UpstreamInfo, PoolType, UpstreamStatus
   router.rs        — facade
   router/
-    policy.rs      — pick best upstream from snapshot
-    proxy.rs       — zero-copy streaming proxy
-    fallback.rs    — GPU→CPU fallback with budget
+    policy.rs        — pick best upstream from snapshot
+    proxy.rs         — zero-copy streaming proxy
+    fallback.rs      — per-route dispatch: hedged race or sequential timeout
+    route_policy.rs  — RoutePolicy::for_path: classify request → strategy
   handler.rs       — facade
   handler/
     proxy.rs       — Axum handler: buffer body, call fallback::route

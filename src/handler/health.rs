@@ -124,7 +124,9 @@ mod tests {
             cpu_dns: "cpu.test.internal".to_string(),
             dns_refresh: Duration::from_secs(30),
             health_poll: Duration::from_secs(5),
-            fallback_budget: Duration::from_secs(1),
+            hedge_delay: Duration::from_secs(5),
+            control_timeout: Duration::from_secs(1),
+            legacy_fallback_budget_set: false,
             heartbeat: Duration::from_secs(60),
         }
     }
