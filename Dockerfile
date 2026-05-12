@@ -1,0 +1,45 @@
+FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       curl ca-certificates build-essential pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG TARGETARCH
+ARG RUSTUP_VERSION=1.29.0
+RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64-unknown-linux-gnu" || echo "x86_64-unknown-linux-gnu") \
+    && BASE="https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ARCH}" \
+    && curl --proto '=https' --tlsv1.2 -sSf "${BASE}/rustup-init"        -o /tmp/rustup-init \
+    && curl --proto '=https' --tlsv1.2 -sSf "${BASE}/rustup-init.sha256"  -o /tmp/rustup-init.sha256 \
+    && cd /tmp && sha256sum -c rustup-init.sha256 \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --no-modify-path --default-toolchain stable \
+    && rm /tmp/rustup-init /tmp/rustup-init.sha256
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /app
+
+# Cache dependency compilation separately from application code.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main(){}" > src/main.rs && touch src/lib.rs \
+    && cargo build --release \
+    && rm -rf src
+
+COPY src ./src
+RUN touch src/main.rs src/lib.rs \
+    && cargo build --release
+
+# ── Runtime image ──────────────────────────────────────────────────────
+FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/bge-router /usr/local/bin/bge-router
+
+EXPOSE 8081
+HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /router/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && read -t5 s <&3 && [[ $s == *200* ]] || exit 1"]
+
+ENTRYPOINT ["/usr/local/bin/bge-router"]

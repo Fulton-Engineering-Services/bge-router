@@ -1,0 +1,54 @@
+[package]
+name = "bge-router"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "Transparent HTTP reverse proxy routing between BGE-M3 GPU and CPU upstream pools"
+repository = "https://github.com/Fulton-Engineering-Services/bge-router"
+readme = "README.md"
+keywords = ["proxy", "bge-m3", "embeddings", "routing", "axum"]
+categories = ["web-programming::http-server"]
+rust-version = "1.88"
+
+[lib]
+name = "bge_router"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bge-router"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+anyhow = "1"
+tower-http = { version = "0.6", features = ["trace", "request-id"] }
+uuid = { version = "1", features = ["v4"] }
+arc-swap = "1"
+tokio-util = { version = "0.7", features = ["io"] }
+bytes = "1"
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }

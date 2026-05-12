@@ -1,0 +1,36 @@
+# cargo-deny configuration (v2 format, cargo-deny >= 0.16)
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+unmaintained = "all"
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "Unlicense",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",   # webpki-roots (rustls)
+]
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+skip-tree = [
+    { crate = "windows-targets" },
+]
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

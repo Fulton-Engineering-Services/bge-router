@@ -1,0 +1,249 @@
+openapi: "3.1.0"
+info:
+  title: bge-router
+  description: >
+    Transparent HTTP reverse proxy for bge-m3-embedding-server. Routes
+    requests to the best available upstream (GPU preferred, CPU fallback).
+    All embedding endpoints are forwarded verbatim; only /router/health is
+    router-native.
+  version: "0.1.0"
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://bge-m3.codekeeper.internal:8081
+    description: Internal Cloud Map endpoint (via router)
+
+paths:
+  /v1/embeddings:
+    post:
+      summary: Dense embeddings (OpenAI-compatible)
+      description: >
+        Proxied transparently to the selected upstream bge-m3-embedding-server.
+        Request and response shapes are identical to the upstream API.
+      operationId: createEmbeddings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbeddingRequest"
+      responses:
+        "200":
+          description: Embedding response from upstream
+          headers:
+            X-Bge-Router-Upstream:
+              schema:
+                type: string
+              description: IP:port of the upstream that served this request
+            X-Bge-Router-Pool:
+              schema:
+                type: string
+                enum: [gpu, cpu]
+              description: Pool type of the selected upstream
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbeddingResponse"
+        "503":
+          description: No healthy upstream available
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /v1/sparse-embeddings:
+    post:
+      summary: Sparse embeddings (BGE-M3 SPLADE-style)
+      description: Proxied transparently to the selected upstream.
+      operationId: createSparseEmbeddings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbeddingRequest"
+      responses:
+        "200":
+          description: Sparse embedding response from upstream
+          headers:
+            X-Bge-Router-Upstream:
+              schema:
+                type: string
+            X-Bge-Router-Pool:
+              schema:
+                type: string
+                enum: [gpu, cpu]
+          content:
+            application/json:
+              schema:
+                type: object
+        "503":
+          description: No healthy upstream available
+
+  /v1/embeddings:both:
+    post:
+      summary: Dense + sparse embeddings in a single forward pass
+      description: >
+        Proxied transparently to the selected upstream. Both output heads are
+        computed in one transformer forward pass on the upstream side.
+      operationId: createBothEmbeddings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbeddingRequest"
+      responses:
+        "200":
+          description: Combined dense + sparse response from upstream
+          headers:
+            X-Bge-Router-Upstream:
+              schema:
+                type: string
+            X-Bge-Router-Pool:
+              schema:
+                type: string
+                enum: [gpu, cpu]
+          content:
+            application/json:
+              schema:
+                type: object
+        "503":
+          description: No healthy upstream available
+
+  /health:
+    get:
+      summary: Upstream health (proxied)
+      description: >
+        Forwarded to the selected upstream's /health endpoint. Returns the
+        upstream's readiness status and tuning metadata. Use /router/health
+        for the router's own pool status.
+      operationId: upstreamHealth
+      responses:
+        "200":
+          description: Upstream is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+        "503":
+          description: Upstream is loading or unhealthy, or no upstream available
+
+  /v1/models:
+    get:
+      summary: Model list (proxied)
+      description: >
+        Forwarded to the selected upstream. Returns fleet discovery metadata.
+      operationId: listModels
+      responses:
+        "200":
+          description: Model list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /router/health:
+    get:
+      summary: Router health (native)
+      description: >
+        Returns the router's own view of the upstream pool. Not proxied —
+        served directly by the router process. Use this endpoint for load
+        balancer health checks targeting the router itself.
+      operationId: routerHealth
+      responses:
+        "200":
+          description: At least one upstream is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterHealthResponse"
+        "503":
+          description: No healthy upstream in either pool
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouterHealthResponse"
+
+components:
+  schemas:
+    EmbeddingRequest:
+      type: object
+      required: [input]
+      properties:
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+        model:
+          type: string
+          default: bge-m3
+
+    EmbeddingResponse:
+      type: object
+      properties:
+        object:
+          type: string
+          example: list
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              object:
+                type: string
+                example: embedding
+              index:
+                type: integer
+              embedding:
+                type: array
+                items:
+                  type: number
+        model:
+          type: string
+        usage:
+          type: object
+
+    RouterHealthResponse:
+      type: object
+      required: [status, gpu_upstreams, cpu_upstreams]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        gpu_upstreams:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpstreamView"
+        cpu_upstreams:
+          type: array
+          items:
+            $ref: "#/components/schemas/UpstreamView"
+
+    UpstreamView:
+      type: object
+      required: [addr, pool_type, status, queue_depth, live_workers, last_seen_secs_ago]
+      properties:
+        addr:
+          type: string
+          example: "10.0.1.5:8081"
+        pool_type:
+          type: string
+          enum: [gpu, cpu]
+        status:
+          type: string
+          enum: [ok, loading, fail, unknown]
+        queue_depth:
+          type: integer
+          minimum: 0
+        live_workers:
+          type: integer
+          minimum: 0
+        last_seen_secs_ago:
+          type: number
+          format: double
+          minimum: 0
