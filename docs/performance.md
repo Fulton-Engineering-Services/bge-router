@@ -69,9 +69,10 @@ connection setup + response headers from GPU (or CPU). For a 10 KB embedding
 request this is ~10 KB × 2 Fargate tasks × concurrent request rate. At 100
 concurrent requests per task, peak body buffer is ~1 MB per task.
 
-The Fargate task definition allocates 512 CPU units / 1024 MiB memory. The
-router itself uses well under 100 MB at peak; the allocation is sized to give
-the OS and Tokio runtime headroom, not because the router needs it.
+A minimal deployment allocation (e.g. 512 CPU units / 1024 MiB on ECS Fargate)
+is more than sufficient — the router itself uses well under 100 MB at peak.
+The allocation can be sized to give the OS and Tokio runtime headroom, not
+because the router has significant memory requirements.
 
 ## Throughput and Queuing
 
@@ -80,10 +81,11 @@ forwarded to the selected upstream (or rejected with 503 if no upstream is
 available). The upstream's `BGE_M3_WORKERS` setting and its internal
 semaphore queue are the throughput bottleneck for the end-to-end system.
 
-Because two Fargate router tasks run in parallel (`desiredCount: 2`), the
-ALB distributes incoming requests across both. Each router task independently
-reads the same `ArcSwap<PoolSnapshot>` and may select the same upstream for
-concurrent requests — the upstream's queue depth absorbs this concurrency.
+Because the router is stateless, multiple router instances can run in parallel
+behind a load balancer for high availability. The ALB distributes incoming
+requests across all instances. Each router independently reads the shared
+`ArcSwap<PoolSnapshot>` and may select the same upstream for concurrent
+requests — the upstream's queue depth absorbs this concurrency.
 
 ## Bottleneck Identification
 
@@ -120,7 +122,7 @@ or in an upstream:
 
 | Resource | Scaling action | Expected effect |
 |----------|----------------|-----------------|
-| Router tasks (currently 2) | Increase `desiredCount` | Reduces ALB connection concurrency per router; no upstream benefit |
+| Router task count | Increase (e.g. `desiredCount` on ECS) | Reduces ALB connection concurrency per router; no upstream benefit |
 | CPU pool tasks | Add bge-m3-embedding-server tasks | Linear throughput increase; router discovers them on next DNS refresh |
 | GPU pool tasks | ECS autoscaling or manual scale-out | Dramatic latency improvement for long-sequence batches; 35 s discovery delay |
 | `BGE_M3_WORKERS` per upstream | Increase (CPU tasks) | More concurrent inference workers per task; linear up to available vCPUs |

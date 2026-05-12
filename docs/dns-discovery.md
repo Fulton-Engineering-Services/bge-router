@@ -11,8 +11,8 @@ The DNS discovery task ticks every `BGE_ROUTER_DNS_REFRESH_SECS` (default
 30 seconds). On each tick, it resolves both configured DNS names concurrently:
 
 ```
-BGE_ROUTER_GPU_DNS  (default: bge-m3-gpu.codekeeper.internal)
-BGE_ROUTER_CPU_DNS  (default: bge-m3-cpu.codekeeper.internal)
+BGE_ROUTER_GPU_DNS  (default: bge-m3-gpu)
+BGE_ROUTER_CPU_DNS  (default: bge-m3-cpu)
 ```
 
 Resolution uses `tokio::net::lookup_host`, which delegates to the system
@@ -49,20 +49,22 @@ refresh. If the DNS lookup itself fails, the previous set is *not* pruned —
 the failed lookup produces an empty set, which would remove all upstreams.
 See "DNS Failure Handling" below.
 
-## Why DNS (ECS Cloud Map)
+## Why DNS-Based Discovery
 
-AWS ECS Cloud Map integrates with Fargate and EC2 launch types to register
-each task's private IP as an A record when the task passes its health check
-and deregister it when the task stops. Multiple tasks behind the same service
-name appear as multiple A records from a single DNS query.
+DNS provides a natural membership list for any service registry that exposes
+members as A records — AWS ECS Cloud Map, ECS Service Connect, Docker Compose
+networking, Kubernetes services, or plain `/etc/hosts` entries.
 
-This means the router never needs updating when ECS scales the embedding
-service up or down — it discovers the new task set on the next DNS refresh
-cycle. There is no load balancer, no target group, and no manual configuration
+For ECS Cloud Map specifically: each task registers its private IP as an A
+record when its health check passes and deregisters when the task stops.
+Multiple tasks behind the same service name appear as multiple A records from
+a single DNS query. The router never needs updating when ECS scales the
+embedding service up or down — it discovers the new task set on the next DNS
+refresh cycle. There is no load balancer target group or manual configuration
 to keep in sync.
 
-Cloud Map DNS TTL is set to **30 seconds** in the CDK deployment. The
-effective maximum staleness of the router's view of the upstream pool is:
+Set the DNS TTL to match `BGE_ROUTER_DNS_REFRESH_SECS` (default 30 s).
+Effective maximum staleness of the router's view of the upstream pool:
 
 ```
 effective_staleness = dns_refresh_secs + health_poll_secs
@@ -75,25 +77,24 @@ receives a health poll.
 
 ## Scale-to-Zero Behaviour
 
-The GPU pool runs on EC2 spot instances with `minCapacity=0` in the CDK
-autoscaling configuration. When all GPU tasks are stopped:
+The GPU pool can run at zero instances when idle. When all GPU tasks are stopped:
 
-1. Cloud Map deregisters all GPU task IPs.
-2. On the next DNS refresh, `bge-m3-gpu.codekeeper.internal` returns NXDOMAIN
-   or an empty A record set.
+1. The DNS registry deregisters all GPU task IPs.
+2. On the next DNS refresh, the GPU DNS name returns NXDOMAIN or an empty
+   A record set.
 3. The GPU pool is cleared from the `PoolSnapshot`.
 4. All subsequent requests route to the CPU pool.
 
-When GPU tasks start again (e.g. triggered by a CloudWatch autoscaling alarm):
+When GPU tasks start again (e.g. triggered by an autoscaling alarm):
 
-1. New task IPs register in Cloud Map once the task health check passes.
+1. New task IPs register in DNS once the task health check passes.
 2. On the next DNS refresh (up to 30 s), new IPs appear in the GPU pool as
    `Unknown`.
 3. On the next health poll (up to 5 s), the IPs are polled; if bge-m3 reports
    `"ok"`, they become eligible.
 4. The router begins routing to GPU.
 
-The cold start path — from ECS task launch to GPU routing — is dominated by
+The cold start path — from task launch to GPU routing — is dominated by
 bge-m3's model load + optional TensorRT compilation time (minutes), not by
 the router's discovery latency (35 s). The router's contribution to cold
 start is negligible.
@@ -106,7 +107,7 @@ function. This means a one-time DNS blip will **remove all upstreams from
 the pool** for that name on that cycle.
 
 ```
-WARN dns_name="bge-m3-gpu.codekeeper.internal" err="..." DNS lookup failed
+WARN dns_name="bge-m3-gpu" err="..." DNS lookup failed
 ```
 
 The pool recovers as soon as the next DNS refresh cycle succeeds.

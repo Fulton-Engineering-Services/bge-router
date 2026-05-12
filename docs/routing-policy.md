@@ -79,9 +79,9 @@ the snapshot but disappeared from DNS are removed on the next successful
 refresh. A persistent DNS failure leaves the pools unchanged (neither growing
 nor shrinking) until DNS recovers.
 
-When the GPU service is scaled to zero, `bge-m3-gpu.codekeeper.internal`
-returns NXDOMAIN or an empty response. The GPU pool empties on the next DNS
-refresh, and all traffic routes to CPU.
+When the GPU service is scaled to zero, the GPU DNS name returns NXDOMAIN
+or an empty response. The GPU pool empties on the next DNS refresh, and all
+traffic routes to CPU.
 
 ## Atomic Snapshot Updates
 

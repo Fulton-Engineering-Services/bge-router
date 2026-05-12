@@ -67,9 +67,9 @@ upstream that adds latency.
 `"idle"` is mapped to `Loading` because the upstream's models are unloaded
 and a subsequent embedding request would trigger a reload — adding seconds of
 startup latency. Excluding `idle` upstreams from routing avoids this hidden
-latency spike. In the GPU pool, `BGE_M3_IDLE_TIMEOUT_SECS=3600` in the CDK
-deployment means GPU upstreams rarely go idle while tasks are running; the
-`idle` case primarily applies to CPU upstreams under low load.
+latency spike. Setting a long `BGE_M3_IDLE_TIMEOUT_SECS` (e.g. 3600) on GPU
+upstreams keeps them from going idle while tasks are running; the `idle` case
+primarily applies to CPU upstreams under low load with a shorter idle timeout.
 
 ## Poll Failure Behaviour
 
