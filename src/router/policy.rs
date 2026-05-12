@@ -53,3 +53,6 @@ fn pick_from_pool(
         .min_by_key(|u| u.queue_depth)
         .map(|u| (u.addr, pool_type))
 }
+
+#[cfg(test)]
+mod tests;
