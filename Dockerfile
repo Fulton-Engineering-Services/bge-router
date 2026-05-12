@@ -38,6 +38,11 @@ RUN apt-get update \
 
 COPY --from=builder /app/target/release/bge-router /usr/local/bin/bge-router
 
+LABEL org.opencontainers.image.title="bge-router" \
+      org.opencontainers.image.description="Transparent HTTP reverse proxy routing between BGE-M3 GPU and CPU upstream pools" \
+      org.opencontainers.image.url="https://github.com/Fulton-Engineering-Services/bge-router" \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 EXPOSE 8081
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
     CMD ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /router/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && read -t5 s <&3 && [[ $s == *200* ]] || exit 1"]

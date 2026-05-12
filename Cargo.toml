@@ -1,10 +1,11 @@
 [package]
 name = "bge-router"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Transparent HTTP reverse proxy routing between BGE-M3 GPU and CPU upstream pools"
 repository = "https://github.com/Fulton-Engineering-Services/bge-router"
+homepage = "https://github.com/Fulton-Engineering-Services/bge-router"
 readme = "README.md"
 keywords = ["proxy", "bge-m3", "embeddings", "routing", "axum"]
 categories = ["web-programming::http-server"]
