@@ -80,10 +80,8 @@ impl Config {
         F: Fn(&str) -> Option<String>,
     {
         let bind = lookup("BGE_ROUTER_BIND").unwrap_or_else(|| "0.0.0.0:8081".into());
-        let gpu_dns =
-            lookup("BGE_ROUTER_GPU_DNS").unwrap_or_else(|| "bge-m3-gpu.codekeeper.internal".into());
-        let cpu_dns =
-            lookup("BGE_ROUTER_CPU_DNS").unwrap_or_else(|| "bge-m3-cpu.codekeeper.internal".into());
+        let gpu_dns = lookup("BGE_ROUTER_GPU_DNS").unwrap_or_else(|| "bge-m3-gpu".into());
+        let cpu_dns = lookup("BGE_ROUTER_CPU_DNS").unwrap_or_else(|| "bge-m3-cpu".into());
 
         let dns_refresh_secs = parse_u64("BGE_ROUTER_DNS_REFRESH_SECS", 30, &lookup)?;
         let health_poll_secs = parse_u64("BGE_ROUTER_HEALTH_POLL_SECS", 5, &lookup)?;

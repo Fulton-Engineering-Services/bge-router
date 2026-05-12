@@ -47,12 +47,12 @@ fn default_bind_address() {
 
 #[test]
 fn default_gpu_dns() {
-    assert_eq!(empty_lookup().gpu_dns, "bge-m3-gpu.codekeeper.internal");
+    assert_eq!(empty_lookup().gpu_dns, "bge-m3-gpu");
 }
 
 #[test]
 fn default_cpu_dns() {
-    assert_eq!(empty_lookup().cpu_dns, "bge-m3-cpu.codekeeper.internal");
+    assert_eq!(empty_lookup().cpu_dns, "bge-m3-cpu");
 }
 
 #[test]

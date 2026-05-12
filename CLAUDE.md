@@ -4,10 +4,10 @@ Axum HTTP server that transparently proxies BGE-M3 embedding requests between GP
 
 ## Use Cases
 
-- Unified `bge-m3.codekeeper.internal` endpoint that routes to GPU when warm, CPU as fallback
+- Single embedding endpoint that routes to GPU when warm, CPU as fallback
 - Transparent to callers — same API as `bge-m3-embedding-server` (`/v1/embeddings`, `/v1/sparse-embeddings`, `/v1/embeddings:both`)
 - Scale-to-zero GPU support: router keeps serving via CPU while GPU cold-starts
-- Companion to `bge-m3-embedding-server` in the bge-gpu-burst-pool architecture
+- Companion to `bge-m3-embedding-server` in a GPU-burst-pool architecture
 
 ## Build & Test Commands
 
@@ -67,8 +67,8 @@ HTTP 503 when all pools are empty or unhealthy.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BGE_ROUTER_BIND` | `0.0.0.0:8081` | TCP bind address |
-| `BGE_ROUTER_GPU_DNS` | `bge-m3-gpu.codekeeper.internal` | DNS name for GPU upstreams |
-| `BGE_ROUTER_CPU_DNS` | `bge-m3-cpu.codekeeper.internal` | DNS name for CPU upstreams |
+| `BGE_ROUTER_GPU_DNS` | `bge-m3-gpu` | DNS name for GPU upstreams |
+| `BGE_ROUTER_CPU_DNS` | `bge-m3-cpu` | DNS name for CPU upstreams |
 | `BGE_ROUTER_DNS_REFRESH_SECS` | `30` | How often to re-resolve both DNS names |
 | `BGE_ROUTER_HEALTH_POLL_SECS` | `5` | How often to poll each upstream's `/health` |
 | `BGE_ROUTER_HEDGE_DELAY_MS` | `5000` | Inference paths only: ms to wait before firing the parallel CPU race against the GPU |
@@ -80,7 +80,7 @@ HTTP 503 when all pools are empty or unhealthy.
 
 ## Architecture
 
-**No worker pool needed** — the router is stateless and horizontally scalable. Two Fargate tasks run in parallel for HA.
+**No worker pool needed** — the router is stateless and horizontally scalable. Run multiple instances behind a load balancer for HA.
 
 **Upstream discovery:**
 - DNS refresh every `BGE_ROUTER_DNS_REFRESH_SECS` seconds via `tokio::net::lookup_host`
@@ -173,8 +173,8 @@ To release: bump version in `Cargo.toml`, commit, push to `main`.
 ```bash
 docker build -t bge-router .
 docker run --rm -p 8081:8081 \
-  -e BGE_ROUTER_GPU_DNS=bge-m3-gpu.codekeeper.internal \
-  -e BGE_ROUTER_CPU_DNS=bge-m3-cpu.codekeeper.internal \
+  -e BGE_ROUTER_GPU_DNS=bge-m3-gpu \
+  -e BGE_ROUTER_CPU_DNS=bge-m3-cpu \
   bge-router
 ```
 

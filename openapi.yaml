@@ -6,14 +6,14 @@ info:
     requests to the best available upstream (GPU preferred, CPU fallback).
     All embedding endpoints are forwarded verbatim; only /router/health is
     router-native.
-  version: "0.1.0"
+  version: "0.2.0"
   license:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
 
 servers:
-  - url: http://bge-m3.codekeeper.internal:8081
-    description: Internal Cloud Map endpoint (via router)
+  - url: http://localhost:8081
+    description: bge-router endpoint (replace with your deployment URL)
 
 paths:
   /v1/embeddings:
