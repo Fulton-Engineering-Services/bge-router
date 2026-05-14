@@ -34,11 +34,11 @@
 //!
 //! ## Adaptive refresh cadence
 //!
-//! The loop uses [`compute_next_interval`] to back off on failure:
+//! The loop uses `compute_next_interval` to back off on failure:
 //!
 //! - Steady state (both pools have addresses): refresh every
 //!   `config.dns_refresh` (default 30 s).
-//! - On transition healthy → unhealthy: drop to [`INITIAL_RETRY_INTERVAL`]
+//! - On transition healthy → unhealthy: drop to `INITIAL_RETRY_INTERVAL`
 //!   (2 s).
 //! - While unhealthy: double the previous interval each cycle, capped at
 //!   `config.dns_refresh`.
