@@ -181,6 +181,93 @@ fn picks_lowest_depth_among_multiple_ok_cpus() {
     );
 }
 
+// ── Loading fallback (idle upstreams) ─────────────────────────────────────────
+
+#[test]
+fn loading_gpu_with_live_workers_is_picked_as_fallback() {
+    // Both pools loading: GPU loading should be preferred over CPU loading,
+    // mirroring the Ok priority order.
+    let gpu = make_upstream("10.0.0.1:8081", PoolType::Gpu, UpstreamStatus::Loading, 0);
+    let cpu = make_upstream("10.0.1.1:8081", PoolType::Cpu, UpstreamStatus::Loading, 0);
+    let snap = snapshot(vec![gpu], vec![cpu]);
+    let (_, pool) = pick(&snap).expect("loading GPU with live_workers should be picked");
+    assert_eq!(
+        pool,
+        PoolType::Gpu,
+        "loading GPU should be preferred over loading CPU"
+    );
+}
+
+#[test]
+fn all_loading_cpu_only_is_picked_as_fallback() {
+    let cpu = make_upstream("10.0.1.1:8081", PoolType::Cpu, UpstreamStatus::Loading, 0);
+    let snap = snapshot(vec![], vec![cpu]);
+    let (_, pool) = pick(&snap).expect("loading CPU should be picked when no GPU");
+    assert_eq!(pool, PoolType::Cpu);
+}
+
+#[test]
+fn ok_cpu_beats_loading_gpu_in_fallback() {
+    // An Ok CPU should be picked over a loading GPU — Ok tier always wins.
+    let gpu = make_upstream("10.0.0.1:8081", PoolType::Gpu, UpstreamStatus::Loading, 0);
+    let cpu = make_upstream("10.0.1.1:8081", PoolType::Cpu, UpstreamStatus::Ok, 0);
+    let snap = snapshot(vec![gpu], vec![cpu]);
+    let (_, pool) = pick(&snap).expect("should pick Ok CPU");
+    assert_eq!(pool, PoolType::Cpu, "Ok CPU should beat loading GPU");
+}
+
+#[test]
+fn fail_gpu_falls_back_to_loading_cpu() {
+    // Fail GPU, Loading CPU: loading CPU should be picked.
+    let gpu = make_upstream("10.0.0.1:8081", PoolType::Gpu, UpstreamStatus::Fail, 0);
+    let cpu = make_upstream("10.0.1.1:8081", PoolType::Cpu, UpstreamStatus::Loading, 0);
+    let snap = snapshot(vec![gpu], vec![cpu]);
+    let (_, pool) = pick(&snap).expect("should fall back to loading CPU");
+    assert_eq!(pool, PoolType::Cpu);
+}
+
+#[test]
+fn loading_upstream_with_zero_live_workers_is_skipped() {
+    // live_workers == 0 means the upstream cannot accept requests yet.
+    let cpu = UpstreamInfo {
+        addr: "10.0.1.1:8081".parse::<SocketAddr>().unwrap(),
+        pool_type: PoolType::Cpu,
+        status: UpstreamStatus::Loading,
+        queue_depth: 0,
+        live_workers: 0,
+        last_seen: std::time::Instant::now(),
+    };
+    let snap = snapshot(vec![], vec![cpu]);
+    assert!(
+        pick(&snap).is_none(),
+        "loading upstream with live_workers=0 must not be picked"
+    );
+}
+
+#[test]
+fn pick_gpu_includes_loading_fallback() {
+    let gpu = make_upstream("10.0.0.1:8081", PoolType::Gpu, UpstreamStatus::Loading, 0);
+    let snap = snapshot(vec![gpu], vec![]);
+    let result = pick_gpu(&snap);
+    assert!(
+        result.is_some(),
+        "pick_gpu should return loading GPU as fallback"
+    );
+    assert_eq!(result.unwrap().1, PoolType::Gpu);
+}
+
+#[test]
+fn pick_cpu_includes_loading_fallback() {
+    let cpu = make_upstream("10.0.1.1:8081", PoolType::Cpu, UpstreamStatus::Loading, 0);
+    let snap = snapshot(vec![], vec![cpu]);
+    let result = pick_cpu(&snap);
+    assert!(
+        result.is_some(),
+        "pick_cpu should return loading CPU as fallback"
+    );
+    assert_eq!(result.unwrap().1, PoolType::Cpu);
+}
+
 // ── All unavailable ─────────────────────────────────────────────────────────────
 
 #[test]

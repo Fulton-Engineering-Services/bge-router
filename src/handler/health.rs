@@ -48,10 +48,16 @@ pub async fn router_health(State(state): State<AppState>) -> impl IntoResponse {
     } else {
         "degraded"
     };
-    let http_status = if gpu_ok == 0 && cpu_ok == 0 {
-        StatusCode::SERVICE_UNAVAILABLE
-    } else {
+    // Return 503 only when the pool is completely empty (no upstreams discovered
+    // via DNS). When upstreams exist but are loading or idle, the router is still
+    // functional — it will route requests and trigger model reloads. Returning
+    // 503 in that case causes the ECS health check to kill the container, which
+    // prevents traffic from reaching the upstreams and keeps them idle forever.
+    let has_any_upstream = !gpu.is_empty() || !cpu.is_empty();
+    let http_status = if has_any_upstream {
         StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
     };
 
     (
@@ -144,6 +150,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_pool_returns_503_with_degraded_status() {
+        // 503 only when the pool is completely empty — no upstreams discovered.
         let state = AppState::new(test_config());
         let app = crate::bootstrap::router::build(state);
 
@@ -166,6 +173,48 @@ mod tests {
         assert!(body["cpu_upstreams"].is_array());
         assert_eq!(body["gpu_upstreams"].as_array().unwrap().len(), 0);
         assert_eq!(body["cpu_upstreams"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn loading_upstream_returns_200_not_503() {
+        // When upstreams are discovered but idle/loading, the router returns
+        // 200 degraded so the ECS health check does not kill the container.
+        // Killing the container would prevent traffic from reaching upstreams
+        // and keep them idle forever (deadlock).
+        use crate::upstream::snapshot::{PoolSnapshot, UpstreamStatus};
+        use std::net::SocketAddr;
+
+        let state = AppState::new(test_config());
+        let snapshot = PoolSnapshot {
+            gpu: vec![],
+            cpu: vec![crate::upstream::snapshot::UpstreamInfo {
+                addr: "10.0.0.1:8081".parse::<SocketAddr>().unwrap(),
+                pool_type: crate::upstream::snapshot::PoolType::Cpu,
+                status: UpstreamStatus::Loading,
+                queue_depth: 0,
+                live_workers: 8,
+                last_seen: std::time::Instant::now(),
+            }],
+            updated_at: std::time::Instant::now(),
+        };
+        state.pool.store(Arc::new(snapshot));
+
+        let app = crate::bootstrap::router::build(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/router/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], "degraded");
     }
 
     #[tokio::test]
