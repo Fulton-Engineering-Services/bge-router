@@ -7,8 +7,8 @@ private IP as an A record, and the set of A records is the live task set.
 
 ## How DNS Discovery Works
 
-The DNS discovery task ticks every `BGE_ROUTER_DNS_REFRESH_SECS` (default
-30 seconds). On each tick, it resolves both configured DNS names concurrently:
+The DNS discovery task resolves both configured DNS names concurrently on an
+adaptive cadence (see "Refresh Cadence" below):
 
 ```
 BGE_ROUTER_GPU_DNS  (default: bge-m3-gpu)
@@ -19,9 +19,19 @@ Resolution uses `tokio::net::lookup_host`, which delegates to the system
 resolver. Each name is resolved to port 8081: the router always appends
 `:8081` to every resolved IP — all bge-m3 upstreams must bind on port 8081.
 
-If a DNS lookup fails (NXDOMAIN, timeout, or network error), the lookup
-returns an empty set and logs a `WARN`. The merge step then removes any
-previously-known addresses for that name from the snapshot.
+The discovery loop distinguishes three outcomes per lookup:
+
+| Outcome | Cause | Effect on pool |
+|---|---|---|
+| `Resolved(some addrs)` | DNS returned ≥1 A record | Merge with existing pool (see below) |
+| `Resolved(empty)` | DNS returned 0 A records (legitimate scale-to-zero) | Clear the pool |
+| `Failed` | NXDOMAIN, timeout, or network error | **Preserve** the previous pool; logs `WARN` |
+
+Preserving the pool on `Failed` is what makes the router resilient to
+transient DNS hiccups: the health poller continues running against the
+existing addresses, so addresses that have genuinely gone away are marked
+`Fail` within one health-poll cycle and become unroutable on their own
+without requiring DNS to remove them.
 
 ## Merge Semantics
 
@@ -45,9 +55,9 @@ registered in DNS but hasn't finished loading its model yet.
 IPs is a no-op for health state.
 
 **Disappeared addresses** are pruned immediately on the next successful DNS
-refresh. If the DNS lookup itself fails, the previous set is *not* pruned —
-the failed lookup produces an empty set, which would remove all upstreams.
-See "DNS Failure Handling" below.
+refresh (whether it returns a smaller non-empty set or an empty set). On a
+DNS *error* (network/timeout/NXDOMAIN), the previous set is preserved — see
+"DNS Failure Handling" below.
 
 ## Why DNS-Based Discovery
 
@@ -64,59 +74,113 @@ refresh cycle. There is no load balancer target group or manual configuration
 to keep in sync.
 
 Set the DNS TTL to match `BGE_ROUTER_DNS_REFRESH_SECS` (default 30 s).
-Effective maximum staleness of the router's view of the upstream pool:
+Effective maximum staleness in **steady state**:
 
 ```
 effective_staleness = dns_refresh_secs + health_poll_secs
                     = 30 s (DNS) + 5 s (health) = 35 s
 ```
 
-A task must appear in DNS for at least `dns_refresh_secs` before the router
-can discover it, and then wait up to `health_poll_secs` more before it
-receives a health poll.
+During cold start or after an upstream pool drains to zero, the discovery
+loop switches to fast retry (see "Refresh Cadence"), and the effective
+staleness collapses to `2 s + health_poll_secs = 7 s` until the pool
+recovers.
+
+## Refresh Cadence
+
+The discovery loop runs on an adaptive schedule rather than a fixed timer:
+
+| Condition | Sleep before next refresh |
+|---|---|
+| Both pools have addresses | `dns_refresh_secs` (default 30 s) |
+| Just transitioned to "either pool empty / failed" | 2 s (`INITIAL_RETRY_INTERVAL`) |
+| Still unhealthy | double the previous sleep, capped at `dns_refresh_secs` |
+
+Concretely, a cold start where both pools start empty produces this
+schedule: `0 s → 2 s → 4 s → 8 s → 16 s → 30 s → 30 s → …`. As soon as
+**both** pools have addresses from a successful resolution, the loop drops
+back to the steady-state interval. A subsequent failure resets the schedule
+to 2 s on the very next tick.
+
+This pattern collapses cold-start time when an upstream service comes up
+shortly after the router boots — which is common with concurrent ECS
+deploys — without hammering DNS during extended outages.
+
+The discovery loop emits an INFO log on transitions into the healthy state
+and a WARN log on transitions out:
+
+```
+INFO  ... "DNS discovery recovered: both pools populated"
+WARN  ... "DNS discovery degraded: at least one pool empty or unresolved; \
+            entering fast-retry backoff"
+```
 
 ## Scale-to-Zero Behaviour
 
 The GPU pool can run at zero instances when idle. When all GPU tasks are stopped:
 
 1. The DNS registry deregisters all GPU task IPs.
-2. On the next DNS refresh, the GPU DNS name returns NXDOMAIN or an empty
-   A record set.
-3. The GPU pool is cleared from the `PoolSnapshot`.
-4. All subsequent requests route to the CPU pool.
+2. On the next DNS refresh, the GPU DNS name either returns NXDOMAIN
+   (treated as `Failed` → pool preserved this cycle) or an empty A record
+   set (treated as `Resolved(empty)` → pool cleared immediately).
+3. The health poller marks any still-pinned-but-actually-dead addresses
+   `Fail` within ~5 s, so routing stops sending traffic to them regardless
+   of which DNS outcome we get.
+4. With both pools eventually empty-or-failing, the discovery loop switches
+   to its fast-retry schedule (2 s, 4 s, 8 s, …).
+5. All requests route to whichever pool still has healthy addresses
+   (typically CPU).
 
 When GPU tasks start again (e.g. triggered by an autoscaling alarm):
 
 1. New task IPs register in DNS once the task health check passes.
-2. On the next DNS refresh (up to 30 s), new IPs appear in the GPU pool as
-   `Unknown`.
-3. On the next health poll (up to 5 s), the IPs are polled; if bge-m3 reports
+2. The next DNS refresh — usually within 2–8 s thanks to fast-retry —
+   picks up the new IPs and adds them to the GPU pool as `Unknown`.
+3. The next health poll (up to 5 s) probes the IPs; if bge-m3 reports
    `"ok"`, they become eligible.
 4. The router begins routing to GPU.
 
-The cold start path — from task launch to GPU routing — is dominated by
-bge-m3's model load + optional TensorRT compilation time (minutes), not by
-the router's discovery latency (35 s). The router's contribution to cold
-start is negligible.
+The router's contribution to cold-start latency in this scenario is roughly
+`fast_retry_interval + health_poll = 7–13 s`, down from the previous
+30 s + 5 s = 35 s. The dominant cost is still bge-m3's model load plus
+optional TensorRT compilation (minutes); the router's contribution is
+negligible.
 
 ## DNS Failure Handling
 
-A DNS lookup failure (not an empty-but-valid response, but a network-level
-error) is logged as `WARN` and returns an empty address set to the merge
-function. This means a one-time DNS blip will **remove all upstreams from
-the pool** for that name on that cycle.
+A DNS lookup failure (network-level error, not an empty-but-valid response)
+is logged as `WARN`, and the merge step **preserves** the previous pool for
+that name:
 
 ```
 WARN dns_name="bge-m3-gpu" err="..." DNS lookup failed
 ```
 
-The pool recovers as soon as the next DNS refresh cycle succeeds.
+The health poller keeps probing the existing addresses. Any address that is
+genuinely gone fails its next `/health` request and is marked `Fail`, which
+removes it from the routable set within one health-poll cycle (~5 s). When
+the next DNS refresh succeeds, the snapshot reconverges to the authoritative
+DNS answer.
+
+This means a one-time DNS blip is invisible to clients: the routing snapshot
+keeps its last-known-good addresses, health polling is independent of DNS,
+and routing continues using the same addresses it was already using.
+
+A *valid-but-empty* DNS response is treated differently — see "Scale-to-Zero
+Behaviour" above. Cloud Map / ECS Service Discovery removes A records when
+no tasks are healthy, which usually surfaces as `NXDOMAIN` (failure path, so
+the pool is preserved) for the first refresh after every task stops, then as
+a successful empty response after the registry GC catches up. In practice
+both are handled correctly: a stale address either continues to serve (if
+it's still alive) or gets marked `Fail` by the health poller (if it's not).
 
 > **Operational note:** A persistent DNS failure (e.g. a misconfigured
-> namespace or Route 53 outage) will deplete the GPU pool after one refresh
-> cycle and the CPU pool after two consecutive failures. Monitor `/router/health`
-> for empty `gpu_upstreams` or `cpu_upstreams` arrays, and check VPC DNS
-> resolution if both pools drain simultaneously.
+> namespace or Route 53 outage) keeps the snapshot pinned to its
+> last-known-good addresses. If those addresses are still reachable, traffic
+> continues uninterrupted. If they have gone away, the health poller marks
+> them `Fail` within ~5 s and routing falls back as normal. Monitor
+> `/router/health` and the `DNS discovery degraded` WARN to detect the
+> condition.
 
 ## Local Development and Testing
 
