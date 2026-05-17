@@ -35,15 +35,20 @@ pub fn spawn(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqw
 }
 
 async fn run(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqwest::Client) {
+    let scheme: &'static str = if config.upstream_ca_bundle.is_some() {
+        "https"
+    } else {
+        "http"
+    };
     let mut interval = tokio::time::interval(config.health_poll);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         interval.tick().await;
-        poll_all(&pool, &client).await;
+        poll_all(&pool, &client, scheme).await;
     }
 }
 
-async fn poll_all(pool: &ArcSwap<PoolSnapshot>, client: &reqwest::Client) {
+async fn poll_all(pool: &ArcSwap<PoolSnapshot>, client: &reqwest::Client, scheme: &'static str) {
     let snapshot = pool.load_full();
     let addrs: Vec<_> = snapshot
         .gpu
@@ -57,7 +62,7 @@ async fn poll_all(pool: &ArcSwap<PoolSnapshot>, client: &reqwest::Client) {
     }
 
     // Poll all upstreams concurrently.
-    let results = poll_concurrent(client, addrs).await;
+    let results = poll_concurrent(client, addrs, scheme).await;
 
     // Apply updates to the snapshot.
     let current = pool.load();
@@ -75,11 +80,12 @@ struct PollResult {
 async fn poll_concurrent(
     client: &reqwest::Client,
     addrs: Vec<std::net::SocketAddr>,
+    scheme: &'static str,
 ) -> Vec<PollResult> {
     let mut set = tokio::task::JoinSet::new();
     for addr in addrs {
         let client = client.clone();
-        set.spawn(async move { poll_one(&client, addr).await });
+        set.spawn(async move { poll_one(&client, addr, scheme).await });
     }
     let mut results = Vec::new();
     while let Some(r) = set.join_next().await {
@@ -90,8 +96,12 @@ async fn poll_concurrent(
     results
 }
 
-async fn poll_one(client: &reqwest::Client, addr: std::net::SocketAddr) -> PollResult {
-    let url = format!("http://{addr}/health");
+async fn poll_one(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    scheme: &str,
+) -> PollResult {
+    let url = format!("{scheme}://{addr}/health");
     match client
         .get(&url)
         .timeout(std::time::Duration::from_secs(4))

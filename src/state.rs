@@ -37,19 +37,43 @@ pub struct AppState {
 impl AppState {
     /// Create a new [`AppState`] with an empty pool snapshot and a fresh HTTP client.
     ///
+    /// When `config.upstream_ca_bundle` is set the reqwest client is configured to
+    /// trust that CA bundle for all upstream connections.
+    ///
     /// # Panics
     ///
-    /// Panics if the [`reqwest::Client`] cannot be built (should not happen with
-    /// the default configuration).
+    /// Panics if the CA-bundle file cannot be read or parsed, or if the
+    /// [`reqwest::Client`] cannot be built.
     #[must_use]
     pub fn new(config: Config) -> Self {
+        let mut client_builder = reqwest::Client::builder().pool_max_idle_per_host(32);
+        if let Some(ca_path) = &config.upstream_ca_bundle {
+            let ca_pem = std::fs::read(ca_path).expect("failed to read upstream CA bundle");
+            let cert =
+                reqwest::Certificate::from_pem(&ca_pem).expect("invalid upstream CA bundle PEM");
+            client_builder = client_builder.add_root_certificate(cert);
+        }
+        let client = client_builder
+            .build()
+            .expect("reqwest::Client::build should not fail");
         Self {
             pool: Arc::new(ArcSwap::from_pointee(PoolSnapshot::default())),
             config: Arc::new(config),
-            client: reqwest::Client::builder()
-                .pool_max_idle_per_host(32)
-                .build()
-                .expect("reqwest::Client::build should not fail with these settings"),
+            client,
+        }
+    }
+
+    /// Return the URL scheme (`"https"` or `"http"`) to use when contacting
+    /// upstream bge-m3 instances.
+    ///
+    /// Returns `"https"` when an upstream CA bundle is configured, `"http"`
+    /// otherwise.
+    #[must_use]
+    pub fn upstream_scheme(&self) -> &'static str {
+        if self.config.upstream_ca_bundle.is_some() {
+            "https"
+        } else {
+            "http"
         }
     }
 }
