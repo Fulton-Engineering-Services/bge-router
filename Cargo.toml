@@ -9,7 +9,7 @@ homepage = "https://github.com/Fulton-Engineering-Services/bge-router"
 readme = "README.md"
 keywords = ["proxy", "bge-m3", "embeddings", "routing", "axum"]
 categories = ["web-programming::http-server"]
-rust-version = "1.88"
+rust-version = "1.95"
 
 [lib]
 name = "bge_router"

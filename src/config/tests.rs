@@ -77,7 +77,7 @@ fn default_control_timeout_is_1000ms() {
 
 #[test]
 fn default_heartbeat_is_60s() {
-    assert_eq!(empty_lookup().heartbeat, Duration::from_secs(60));
+    assert_eq!(empty_lookup().heartbeat, Duration::from_mins(1));
 }
 
 #[test]
