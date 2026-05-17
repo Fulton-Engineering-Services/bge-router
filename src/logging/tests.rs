@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex};
 use tracing::subscriber::with_default;
 use tracing_subscriber::fmt::MakeWriter;
 
-use super::{PrependModule, BGE_MODULE};
+use super::{BGE_MODULE, PrependModule};
 
 #[derive(Clone, Default)]
 struct VecWriter(Arc<Mutex<Vec<u8>>>);

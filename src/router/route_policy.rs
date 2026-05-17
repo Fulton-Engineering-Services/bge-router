@@ -82,7 +82,7 @@ fn is_inference_path(path_and_query: &str) -> bool {
 mod tests {
     use std::time::Duration;
 
-    use super::{is_inference_path, RoutePolicy};
+    use super::{RoutePolicy, is_inference_path};
     use crate::config::Config;
 
     fn cfg(hedge_ms: u64, ctl_ms: u64) -> Config {

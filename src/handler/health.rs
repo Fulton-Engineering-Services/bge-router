@@ -17,7 +17,7 @@
 //! Returns the router's own view of the upstream pool — statuses, queue depths,
 //! and live worker counts for every discovered upstream.
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 use std::time::Instant;
 

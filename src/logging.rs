@@ -25,8 +25,8 @@
 use std::fmt;
 
 use tracing::{Event, Subscriber};
-use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::fmt::FmtContext;
+use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
 use tracing_subscriber::registry::LookupSpan;
 
 /// Compile-time identifier for this binary in log output.

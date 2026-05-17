@@ -38,8 +38,8 @@ pub async fn serve(state: AppState) -> Result<()> {
 
     #[cfg(feature = "tls")]
     if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
-        use axum_server::tls_rustls::RustlsConfig;
         use axum_server::Handle;
+        use axum_server::tls_rustls::RustlsConfig;
 
         let tls_config = RustlsConfig::from_pem_file(&cert, &key)
             .await

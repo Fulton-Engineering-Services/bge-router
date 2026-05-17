@@ -266,7 +266,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::{Duration, Instant};
 
-    use super::{compute_next_interval, merge_pool, ResolveResult, INITIAL_RETRY_INTERVAL};
+    use super::{INITIAL_RETRY_INTERVAL, ResolveResult, compute_next_interval, merge_pool};
     use crate::upstream::snapshot::{PoolType, UpstreamInfo, UpstreamStatus};
 
     fn addr(s: &str) -> SocketAddr {

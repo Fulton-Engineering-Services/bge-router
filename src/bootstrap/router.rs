@@ -14,7 +14,7 @@
 
 //! Builds the Axum [`Router`] with all routes and middleware.
 
-use axum::{routing::get, Router};
+use axum::{Router, routing::get};
 use tower_http::{
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     trace::TraceLayer,
