@@ -122,6 +122,21 @@ Worst-case latency is `2 × control_timeout`. Default 1 s × 2 = 2 s.
 This preserves the original WARN message shapes so existing CloudWatch
 filters keep working.
 
+## TLS Awareness
+
+Both the hedged-race path and the sequential-timeout path are TLS-aware. When
+`BGE_ROUTER_UPSTREAM_TLS=1` is set, every upstream URL constructed by the proxy
+uses `https://` instead of `http://`. The scheme is carried by the `UpstreamScheme`
+type and applied uniformly across:
+
+- GPU and CPU legs of the hedged race.
+- GPU and CPU legs of the sequential-timeout path.
+- The upstream health poller (which determines which upstreams are eligible to enter
+  either path).
+
+No per-path TLS configuration is needed. See [docs/tls.md](tls.md) for the full
+TLS setup guide.
+
 ## Configuration
 
 | Variable | Default | Description |

@@ -83,6 +83,29 @@ effective_staleness = dns_refresh_secs + health_poll_secs
 
 The router has no AWS SDK dependency — it discovers upstreams entirely through DNS, so it also works with ECS Service Connect, Docker Compose, Kubernetes, or any resolver that exposes service members as A records.
 
+## TLS
+
+`bge-router` supports optional TLS on both the inbound listener (what clients
+connecting to the router see) and outbound upstream connections (router → bge-m3).
+Both surfaces are opt-in and independent of each other.
+
+See **[docs/tls.md](tls.md)** for the full guide, including build requirements,
+environment variables, certificate provisioning, and typical deployment
+configurations.
+
+Quick reference for the most common production setup (full mutual TLS with a shared
+internal CA):
+
+```bash
+BGE_ROUTER_TLS_CERT_PATH=/tls/leaf.crt    # inbound listener cert
+BGE_ROUTER_TLS_KEY_PATH=/tls/leaf.key     # inbound listener key
+BGE_ROUTER_UPSTREAM_TLS=1                 # use HTTPS for upstream connections
+BGE_ROUTER_UPSTREAM_CA_BUNDLE=/tls/ca.crt # CA bundle for upstream cert validation
+```
+
+The binary must be compiled with `--features tls` for inbound TLS to activate.
+Outbound TLS (`BGE_ROUTER_UPSTREAM_TLS`) does not require `--features tls`.
+
 ## Environment Variable Reference
 
 | Variable | Default | Description |
@@ -98,6 +121,10 @@ The router has no AWS SDK dependency — it discovers upstreams entirely through
 | `BGE_ROUTER_HEARTBEAT_SECS` | `60` | Heartbeat log interval in seconds; `0` disables heartbeat |
 | `BGE_ROUTER_LOG_FORMAT` | auto | `json` (default in non-TTY/container), `text`, or `pretty` |
 | `RUST_LOG` | `info` | Standard tracing filter (e.g. `bge_router=debug`) |
+| `BGE_ROUTER_TLS_CERT_PATH` | unset | Inbound listener TLS cert PEM. Requires `--features tls`. Must be set with KEY or neither. See [tls.md](tls.md). |
+| `BGE_ROUTER_TLS_KEY_PATH` | unset | Inbound listener TLS private key PEM. Must be set with CERT or neither. |
+| `BGE_ROUTER_UPSTREAM_TLS` | unset | Set to `1` to use HTTPS for all upstream bge-m3 connections. Does not require `--features tls`. |
+| `BGE_ROUTER_UPSTREAM_CA_BUNDLE` | unset | Path to CA bundle PEM for validating upstream bge-m3 certs. Used with `BGE_ROUTER_UPSTREAM_TLS`. |
 
 ## Health Checking
 
