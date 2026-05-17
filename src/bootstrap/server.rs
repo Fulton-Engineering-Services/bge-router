@@ -39,14 +39,26 @@ pub async fn serve(state: AppState) -> Result<()> {
     #[cfg(feature = "tls")]
     if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
         use axum_server::tls_rustls::RustlsConfig;
+        use axum_server::Handle;
+
         let tls_config = RustlsConfig::from_pem_file(&cert, &key)
             .await
             .map_err(|e| anyhow::anyhow!("TLS config error: {e}"))?;
         let addr: std::net::SocketAddr = bind
             .parse()
             .map_err(|e| anyhow::anyhow!("invalid bind addr '{bind}': {e}"))?;
+
+        let handle = Handle::new();
+        let h = handle.clone();
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            tracing::info!("TLS shutdown signal received, draining connections");
+            h.graceful_shutdown(Some(std::time::Duration::from_secs(30)));
+        });
+
         tracing::info!(bind = %bind, mode = "tls", "bge-router ready");
         return axum_server::bind_rustls(addr, tls_config)
+            .handle(handle)
             .serve(app.into_make_service())
             .await
             .map_err(Into::into);

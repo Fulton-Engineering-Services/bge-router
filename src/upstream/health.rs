@@ -25,7 +25,7 @@ use arc_swap::ArcSwap;
 use serde::Deserialize;
 
 use crate::config::Config;
-use crate::upstream::snapshot::{PoolSnapshot, UpstreamInfo, UpstreamStatus};
+use crate::upstream::snapshot::{PoolSnapshot, UpstreamInfo, UpstreamScheme, UpstreamStatus};
 
 /// Spawn the health-polling background task.
 pub fn spawn(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqwest::Client) {
@@ -35,11 +35,7 @@ pub fn spawn(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqw
 }
 
 async fn run(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqwest::Client) {
-    let scheme: &'static str = if config.upstream_ca_bundle.is_some() {
-        "https"
-    } else {
-        "http"
-    };
+    let scheme = config.upstream_scheme();
     let mut interval = tokio::time::interval(config.health_poll);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -48,7 +44,7 @@ async fn run(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqw
     }
 }
 
-async fn poll_all(pool: &ArcSwap<PoolSnapshot>, client: &reqwest::Client, scheme: &'static str) {
+async fn poll_all(pool: &ArcSwap<PoolSnapshot>, client: &reqwest::Client, scheme: UpstreamScheme) {
     let snapshot = pool.load_full();
     let addrs: Vec<_> = snapshot
         .gpu
@@ -80,7 +76,7 @@ struct PollResult {
 async fn poll_concurrent(
     client: &reqwest::Client,
     addrs: Vec<std::net::SocketAddr>,
-    scheme: &'static str,
+    scheme: UpstreamScheme,
 ) -> Vec<PollResult> {
     let mut set = tokio::task::JoinSet::new();
     for addr in addrs {
@@ -99,7 +95,7 @@ async fn poll_concurrent(
 async fn poll_one(
     client: &reqwest::Client,
     addr: std::net::SocketAddr,
-    scheme: &str,
+    scheme: UpstreamScheme,
 ) -> PollResult {
     let url = format!("{scheme}://{addr}/health");
     match client

@@ -137,6 +137,7 @@ mod tests {
             tls_cert_path: None,
             tls_key_path: None,
             upstream_ca_bundle: None,
+            upstream_tls: false,
         }
     }
 
@@ -154,7 +155,7 @@ mod tests {
     #[tokio::test]
     async fn empty_pool_returns_503_with_degraded_status() {
         // 503 only when the pool is completely empty — no upstreams discovered.
-        let state = AppState::new(test_config());
+        let state = AppState::new(test_config()).expect("test state must build");
         let app = crate::bootstrap::router::build(state);
 
         let response = app
@@ -187,7 +188,7 @@ mod tests {
         use crate::upstream::snapshot::{PoolSnapshot, UpstreamStatus};
         use std::net::SocketAddr;
 
-        let state = AppState::new(test_config());
+        let state = AppState::new(test_config()).expect("test state must build");
         let snapshot = PoolSnapshot {
             gpu: vec![],
             cpu: vec![crate::upstream::snapshot::UpstreamInfo {
@@ -222,7 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn ok_gpu_upstream_returns_200_with_ok_status() {
-        let state = AppState::new(test_config());
+        let state = AppState::new(test_config()).expect("test state must build");
         let snapshot = PoolSnapshot {
             gpu: vec![ok_gpu_upstream("10.0.0.1:8081")],
             cpu: vec![],
@@ -253,7 +254,7 @@ mod tests {
 
     #[tokio::test]
     async fn response_body_is_valid_json_with_required_fields() {
-        let state = AppState::new(test_config());
+        let state = AppState::new(test_config()).expect("test state must build");
         let app = crate::bootstrap::router::build(state);
 
         let response = app

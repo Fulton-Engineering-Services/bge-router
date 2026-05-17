@@ -40,7 +40,7 @@ use crate::error::AppError;
 use crate::headers::collect_x_headers;
 use crate::router::{policy, proxy, route_policy::RoutePolicy};
 use crate::state::AppState;
-use crate::upstream::snapshot::PoolType;
+use crate::upstream::snapshot::{PoolType, UpstreamScheme};
 
 #[cfg(test)]
 mod tests;
@@ -59,7 +59,7 @@ fn ms(d: Duration) -> u64 {
 /// single reference into the hedged-race helper without exceeding clippy's
 /// `too_many_arguments` ceiling.
 struct ForwardCtx<'a> {
-    scheme: &'static str,
+    scheme: UpstreamScheme,
     method: &'a Method,
     path_and_query: &'a str,
     headers: &'a HeaderMap,
@@ -457,7 +457,6 @@ async fn sequential_timeout(
         if let Some((cpu_addr, _)) = cpu_candidate {
             return forward_cpu_with_timeout(
                 state,
-                scheme,
                 per_upstream,
                 cpu_addr,
                 &method,
@@ -470,7 +469,6 @@ async fn sequential_timeout(
     } else if let Some((cpu_addr, _)) = cpu_candidate {
         return forward_cpu_with_timeout(
             state,
-            scheme,
             per_upstream,
             cpu_addr,
             &method,
@@ -484,10 +482,8 @@ async fn sequential_timeout(
     Err(AppError::NoUpstreamAvailable)
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn forward_cpu_with_timeout(
     state: &AppState,
-    scheme: &str,
     per_upstream: Duration,
     cpu_addr: SocketAddr,
     method: &Method,
@@ -499,7 +495,7 @@ async fn forward_cpu_with_timeout(
         per_upstream,
         proxy::forward(
             &state.client,
-            scheme,
+            state.upstream_scheme(),
             cpu_addr,
             PoolType::Cpu,
             method,

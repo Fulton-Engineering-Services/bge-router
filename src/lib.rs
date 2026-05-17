@@ -75,7 +75,15 @@ pub async fn run() -> Result<()> {
         );
     }
 
-    let app_state = state::AppState::new(cfg);
+    let app_state = state::AppState::new(cfg)?;
+
+    if app_state.config.upstream_ca_bundle.is_some() && !app_state.config.upstream_tls {
+        tracing::warn!(
+            "BGE_ROUTER_UPSTREAM_CA_BUNDLE is set but BGE_ROUTER_UPSTREAM_TLS is not enabled; \
+             CA bundle will be loaded but upstream requests will use HTTP"
+        );
+    }
+
     let pool = Arc::clone(&app_state.pool);
     let cfg_ref = Arc::clone(&app_state.config);
 

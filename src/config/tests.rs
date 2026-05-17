@@ -134,6 +134,88 @@ fn explicit_hedge_delay_wins_over_legacy_var() {
     assert!(cfg.legacy_fallback_budget_set);
 }
 
+// ── TLS config fields ────────────────────────────────────────────────────────
+
+#[test]
+fn tls_cert_path_set_when_var_present() {
+    let cfg = from_map(&[("BGE_ROUTER_TLS_CERT_PATH", "/etc/ssl/cert.pem")]).unwrap_err();
+    // Only cert set without key should fail the half-config guard.
+    let msg = format!("{cfg:#}");
+    assert!(
+        msg.contains("BGE_ROUTER_TLS_CERT_PATH") || msg.contains("TLS misconfiguration"),
+        "error must mention TLS misconfiguration: {msg}"
+    );
+}
+
+#[test]
+fn tls_cert_and_key_both_set_succeeds() {
+    let cfg = from_map(&[
+        ("BGE_ROUTER_TLS_CERT_PATH", "/etc/ssl/cert.pem"),
+        ("BGE_ROUTER_TLS_KEY_PATH", "/etc/ssl/key.pem"),
+    ])
+    .unwrap();
+    assert_eq!(
+        cfg.tls_cert_path.as_deref(),
+        Some(std::path::Path::new("/etc/ssl/cert.pem"))
+    );
+    assert_eq!(
+        cfg.tls_key_path.as_deref(),
+        Some(std::path::Path::new("/etc/ssl/key.pem"))
+    );
+}
+
+#[test]
+fn tls_key_only_is_rejected_by_half_config_guard() {
+    let err = from_map(&[("BGE_ROUTER_TLS_KEY_PATH", "/etc/ssl/key.pem")]).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("TLS misconfiguration"),
+        "half-config guard must fire: {msg}"
+    );
+}
+
+#[test]
+fn upstream_tls_enabled_by_one() {
+    let cfg = from_map(&[("BGE_ROUTER_UPSTREAM_TLS", "1")]).unwrap();
+    assert!(cfg.upstream_tls);
+}
+
+#[test]
+fn upstream_tls_enabled_by_true() {
+    let cfg = from_map(&[("BGE_ROUTER_UPSTREAM_TLS", "true")]).unwrap();
+    assert!(cfg.upstream_tls);
+}
+
+#[test]
+fn upstream_tls_disabled_by_false() {
+    let cfg = from_map(&[("BGE_ROUTER_UPSTREAM_TLS", "false")]).unwrap();
+    assert!(!cfg.upstream_tls);
+}
+
+#[test]
+fn upstream_tls_disabled_by_zero() {
+    let cfg = from_map(&[("BGE_ROUTER_UPSTREAM_TLS", "0")]).unwrap();
+    assert!(!cfg.upstream_tls);
+}
+
+#[test]
+fn upstream_tls_defaults_to_false() {
+    assert!(!empty_lookup().upstream_tls);
+}
+
+#[test]
+fn upstream_scheme_is_https_when_upstream_tls_set() {
+    use crate::upstream::snapshot::UpstreamScheme;
+    let cfg = from_map(&[("BGE_ROUTER_UPSTREAM_TLS", "1")]).unwrap();
+    assert_eq!(cfg.upstream_scheme(), UpstreamScheme::Https);
+}
+
+#[test]
+fn upstream_scheme_is_http_by_default() {
+    use crate::upstream::snapshot::UpstreamScheme;
+    assert_eq!(empty_lookup().upstream_scheme(), UpstreamScheme::Http);
+}
+
 // ── validation ──────────────────────────────────────────────────────────────
 
 #[test]

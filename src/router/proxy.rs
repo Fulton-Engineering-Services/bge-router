@@ -28,7 +28,7 @@ use axum::{
 use bytes::Bytes;
 
 use crate::error::AppError;
-use crate::upstream::snapshot::PoolType;
+use crate::upstream::snapshot::{PoolType, UpstreamScheme};
 
 /// Hop-by-hop headers that must not be forwarded to the upstream or the client.
 static HOP_BY_HOP: &[&str] = &[
@@ -47,6 +47,11 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
     HOP_BY_HOP.contains(&lower)
 }
 
+/// Build an upstream URL from scheme, address, and path.
+fn upstream_url(scheme: UpstreamScheme, addr: SocketAddr, path_and_query: &str) -> String {
+    format!("{scheme}://{addr}{path_and_query}")
+}
+
 /// Forward a buffered request to `addr` and return a streaming [`Response`].
 ///
 /// # Errors
@@ -56,7 +61,7 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub async fn forward(
     client: &reqwest::Client,
-    scheme: &str,
+    scheme: UpstreamScheme,
     addr: SocketAddr,
     pool_type: PoolType,
     method: &Method,
@@ -64,7 +69,7 @@ pub async fn forward(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let url = format!("{scheme}://{addr}{path_and_query}");
+    let url = upstream_url(scheme, addr, path_and_query);
 
     let mut builder = client
         .request(method.clone(), &url)
@@ -106,4 +111,38 @@ pub async fn forward(
     *response.headers_mut() = resp_headers;
 
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::SocketAddr;
+
+    use super::{upstream_url, UpstreamScheme};
+
+    #[test]
+    fn upstream_url_http_scheme() {
+        let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+        assert_eq!(
+            upstream_url(UpstreamScheme::Http, addr, "/health"),
+            "http://127.0.0.1:8081/health"
+        );
+    }
+
+    #[test]
+    fn upstream_url_https_scheme() {
+        let addr: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+        assert_eq!(
+            upstream_url(UpstreamScheme::Https, addr, "/health"),
+            "https://127.0.0.1:8081/health"
+        );
+    }
+
+    #[test]
+    fn upstream_url_preserves_path_and_query() {
+        let addr: SocketAddr = "10.0.0.1:8081".parse().unwrap();
+        assert_eq!(
+            upstream_url(UpstreamScheme::Http, addr, "/v1/embeddings?foo=bar"),
+            "http://10.0.0.1:8081/v1/embeddings?foo=bar"
+        );
+    }
 }
