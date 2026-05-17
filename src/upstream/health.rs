@@ -186,7 +186,7 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::Instant;
 
-    use super::{apply_updates, BgeMHealthResponse, PollResult};
+    use super::{BgeMHealthResponse, PollResult, apply_updates};
     use crate::upstream::snapshot::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
 
     fn unknown_gpu(addr: SocketAddr) -> UpstreamInfo {

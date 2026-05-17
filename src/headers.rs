@@ -67,10 +67,10 @@ pub fn collect_x_headers(headers: &HeaderMap) -> XHeaders {
     let mut map = BTreeMap::new();
     for (name, value) in headers {
         let name_str = name.as_str();
-        if name_str.starts_with("x-") {
-            if let Ok(val) = value.to_str() {
-                map.insert(name_str.to_owned(), val.to_owned());
-            }
+        if name_str.starts_with("x-")
+            && let Ok(val) = value.to_str()
+        {
+            map.insert(name_str.to_owned(), val.to_owned());
         }
     }
     XHeaders(map)
@@ -78,7 +78,7 @@ pub fn collect_x_headers(headers: &HeaderMap) -> XHeaders {
 
 #[cfg(test)]
 mod tests {
-    use axum::http::{header, HeaderValue};
+    use axum::http::{HeaderValue, header};
 
     use super::*;
 
