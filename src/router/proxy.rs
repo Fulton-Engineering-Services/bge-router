@@ -53,8 +53,10 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
 ///
 /// Returns [`AppError::Upstream`] if the upstream connection fails or returns
 /// an unreadable response.
+#[allow(clippy::too_many_arguments)]
 pub async fn forward(
     client: &reqwest::Client,
+    scheme: &str,
     addr: SocketAddr,
     pool_type: PoolType,
     method: &Method,
@@ -62,7 +64,7 @@ pub async fn forward(
     headers: &HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let url = format!("http://{addr}{path_and_query}");
+    let url = format!("{scheme}://{addr}{path_and_query}");
 
     let mut builder = client
         .request(method.clone(), &url)

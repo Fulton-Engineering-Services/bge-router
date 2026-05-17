@@ -54,6 +54,17 @@ pub struct Config {
     /// Interval between periodic heartbeat log events (`BGE_ROUTER_HEARTBEAT_SECS`, default 60).
     /// Set to `0` to disable heartbeats.
     pub heartbeat: Duration,
+    /// Path to the TLS certificate PEM for the inbound listener.
+    /// Env: `BGE_ROUTER_TLS_CERT_PATH`. When set together with `tls_key_path`, the
+    /// listener binds HTTPS (requires the `tls` Cargo feature).
+    pub tls_cert_path: Option<std::path::PathBuf>,
+    /// Path to the TLS private-key PEM for the inbound listener.
+    /// Env: `BGE_ROUTER_TLS_KEY_PATH`.
+    pub tls_key_path: Option<std::path::PathBuf>,
+    /// Path to a CA-bundle PEM to trust for upstream (bge-m3) connections.
+    /// Env: `BGE_ROUTER_UPSTREAM_CA_BUNDLE`. When set, reqwest validates upstream
+    /// TLS using this bundle and all upstream URLs are built with `https://`.
+    pub upstream_ca_bundle: Option<std::path::PathBuf>,
 }
 
 impl Config {
@@ -119,6 +130,10 @@ impl Config {
             control_timeout: Duration::from_millis(control_timeout_ms),
             legacy_fallback_budget_set,
             heartbeat: Duration::from_secs(heartbeat_secs),
+            tls_cert_path: lookup("BGE_ROUTER_TLS_CERT_PATH").map(std::path::PathBuf::from),
+            tls_key_path: lookup("BGE_ROUTER_TLS_KEY_PATH").map(std::path::PathBuf::from),
+            upstream_ca_bundle: lookup("BGE_ROUTER_UPSTREAM_CA_BUNDLE")
+                .map(std::path::PathBuf::from),
         })
     }
 }
