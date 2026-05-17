@@ -21,6 +21,8 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
+use crate::upstream::snapshot::UpstreamScheme;
+
 /// Default GPU→CPU hedge delay for inference routes (5 seconds).
 const DEFAULT_HEDGE_DELAY_MS: u64 = 5_000;
 /// Default per-upstream timeout for control-plane routes (1 second).
@@ -54,6 +56,23 @@ pub struct Config {
     /// Interval between periodic heartbeat log events (`BGE_ROUTER_HEARTBEAT_SECS`, default 60).
     /// Set to `0` to disable heartbeats.
     pub heartbeat: Duration,
+    /// Path to the TLS certificate PEM for the inbound listener.
+    /// Env: `BGE_ROUTER_TLS_CERT_PATH`. When set together with `tls_key_path`, the
+    /// listener binds HTTPS (requires the `tls` Cargo feature).
+    pub tls_cert_path: Option<std::path::PathBuf>,
+    /// Path to the TLS private-key PEM for the inbound listener.
+    /// Env: `BGE_ROUTER_TLS_KEY_PATH`.
+    pub tls_key_path: Option<std::path::PathBuf>,
+    /// Path to a CA-bundle PEM to trust for upstream (bge-m3) connections.
+    /// Env: `BGE_ROUTER_UPSTREAM_CA_BUNDLE`. When set, reqwest validates upstream
+    /// TLS using this bundle. Use together with `upstream_tls = true`.
+    pub upstream_ca_bundle: Option<std::path::PathBuf>,
+    /// Enable HTTPS for upstream (bge-m3) connections.
+    /// Env: `BGE_ROUTER_UPSTREAM_TLS`. When set to `1`, `true`, or `yes`, all
+    /// upstream requests use HTTPS. When combined with `upstream_ca_bundle`,
+    /// the CA bundle is used for cert validation; otherwise the system CA store
+    /// is used.
+    pub upstream_tls: bool,
 }
 
 impl Config {
@@ -109,6 +128,23 @@ impl Config {
             bail!("invalid BGE_ROUTER_CONTROL_TIMEOUT_MS: must be > 0 (got 0)");
         }
 
+        let tls_cert_path = lookup("BGE_ROUTER_TLS_CERT_PATH").map(std::path::PathBuf::from);
+        let tls_key_path = lookup("BGE_ROUTER_TLS_KEY_PATH").map(std::path::PathBuf::from);
+
+        // Guard against partial TLS config: both cert and key must be set or both absent.
+        match (&tls_cert_path, &tls_key_path) {
+            (Some(_), None) | (None, Some(_)) => {
+                bail!(
+                    "TLS misconfiguration: BGE_ROUTER_TLS_CERT_PATH and \
+                     BGE_ROUTER_TLS_KEY_PATH must both be set or both be absent"
+                );
+            }
+            _ => {}
+        }
+
+        let upstream_tls = lookup("BGE_ROUTER_UPSTREAM_TLS")
+            .is_some_and(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"));
+
         Ok(Self {
             bind,
             gpu_dns,
@@ -119,7 +155,23 @@ impl Config {
             control_timeout: Duration::from_millis(control_timeout_ms),
             legacy_fallback_budget_set,
             heartbeat: Duration::from_secs(heartbeat_secs),
+            tls_cert_path,
+            tls_key_path,
+            upstream_ca_bundle: lookup("BGE_ROUTER_UPSTREAM_CA_BUNDLE")
+                .map(std::path::PathBuf::from),
+            upstream_tls,
         })
+    }
+
+    /// Return the [`UpstreamScheme`] to use when contacting upstream bge-m3
+    /// instances: `Https` when `BGE_ROUTER_UPSTREAM_TLS=1`, `Http` otherwise.
+    #[must_use]
+    pub fn upstream_scheme(&self) -> UpstreamScheme {
+        if self.upstream_tls {
+            UpstreamScheme::Https
+        } else {
+            UpstreamScheme::Http
+        }
     }
 }
 

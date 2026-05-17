@@ -16,10 +16,11 @@
 
 use std::sync::Arc;
 
+use anyhow::Context;
 use arc_swap::ArcSwap;
 
 use crate::config::Config;
-use crate::upstream::snapshot::PoolSnapshot;
+use crate::upstream::snapshot::{PoolSnapshot, UpstreamScheme};
 
 /// Shared state available to every request handler via [`axum::extract::State`].
 ///
@@ -37,19 +38,35 @@ pub struct AppState {
 impl AppState {
     /// Create a new [`AppState`] with an empty pool snapshot and a fresh HTTP client.
     ///
-    /// # Panics
+    /// When `config.upstream_ca_bundle` is set the reqwest client is configured to
+    /// trust that CA bundle for all upstream connections.
     ///
-    /// Panics if the [`reqwest::Client`] cannot be built (should not happen with
-    /// the default configuration).
-    #[must_use]
-    pub fn new(config: Config) -> Self {
-        Self {
+    /// # Errors
+    ///
+    /// Returns an error if the CA-bundle file cannot be read or parsed, or if the
+    /// [`reqwest::Client`] cannot be built.
+    pub fn new(config: Config) -> anyhow::Result<Self> {
+        let mut client_builder = reqwest::Client::builder().pool_max_idle_per_host(32);
+        if let Some(ca_path) = &config.upstream_ca_bundle {
+            let ca_pem = std::fs::read(ca_path).with_context(|| {
+                format!("reading upstream CA bundle from {}", ca_path.display())
+            })?;
+            let cert = reqwest::Certificate::from_pem(&ca_pem)
+                .context("upstream CA bundle is not valid PEM")?;
+            client_builder = client_builder.add_root_certificate(cert);
+        }
+        let client = client_builder.build().context("building reqwest::Client")?;
+        Ok(Self {
             pool: Arc::new(ArcSwap::from_pointee(PoolSnapshot::default())),
             config: Arc::new(config),
-            client: reqwest::Client::builder()
-                .pool_max_idle_per_host(32)
-                .build()
-                .expect("reqwest::Client::build should not fail with these settings"),
-        }
+            client,
+        })
+    }
+
+    /// Return the [`UpstreamScheme`] to use when contacting upstream bge-m3
+    /// instances. Delegates to [`Config::upstream_scheme`].
+    #[must_use]
+    pub fn upstream_scheme(&self) -> UpstreamScheme {
+        self.config.upstream_scheme()
     }
 }

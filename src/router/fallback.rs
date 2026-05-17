@@ -40,7 +40,7 @@ use crate::error::AppError;
 use crate::headers::collect_x_headers;
 use crate::router::{policy, proxy, route_policy::RoutePolicy};
 use crate::state::AppState;
-use crate::upstream::snapshot::PoolType;
+use crate::upstream::snapshot::{PoolType, UpstreamScheme};
 
 #[cfg(test)]
 mod tests;
@@ -59,6 +59,7 @@ fn ms(d: Duration) -> u64 {
 /// single reference into the hedged-race helper without exceeding clippy's
 /// `too_many_arguments` ceiling.
 struct ForwardCtx<'a> {
+    scheme: UpstreamScheme,
     method: &'a Method,
     path_and_query: &'a str,
     headers: &'a HeaderMap,
@@ -112,6 +113,7 @@ async fn hedged_race(
     };
 
     let ctx = ForwardCtx {
+        scheme: state.upstream_scheme(),
         method: &method,
         path_and_query,
         headers: &headers,
@@ -170,6 +172,7 @@ async fn forward(
 ) -> Result<Response, AppError> {
     proxy::forward(
         client,
+        ctx.scheme,
         addr,
         pool_type,
         ctx.method,
@@ -408,12 +411,14 @@ async fn sequential_timeout(
     let snapshot = state.pool.load_full();
     let gpu_candidate = policy::pick_gpu(&snapshot);
     let cpu_candidate = policy::pick_cpu(&snapshot);
+    let scheme = state.upstream_scheme();
 
     if let Some((gpu_addr, _)) = gpu_candidate {
         let result = tokio::time::timeout(
             per_upstream,
             proxy::forward(
                 &state.client,
+                scheme,
                 gpu_addr,
                 PoolType::Gpu,
                 &method,
@@ -490,6 +495,7 @@ async fn forward_cpu_with_timeout(
         per_upstream,
         proxy::forward(
             &state.client,
+            state.upstream_scheme(),
             cpu_addr,
             PoolType::Cpu,
             method,

@@ -21,6 +21,32 @@
 use std::net::SocketAddr;
 use std::time::Instant;
 
+/// URL scheme used when contacting upstream bge-m3 instances.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamScheme {
+    /// Plain HTTP — default when `BGE_ROUTER_UPSTREAM_TLS` is not set.
+    Http,
+    /// HTTPS — used when `BGE_ROUTER_UPSTREAM_TLS=1`.
+    Https,
+}
+
+impl UpstreamScheme {
+    /// Returns the scheme string (`"http"` or `"https"`).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+}
+
+impl std::fmt::Display for UpstreamScheme {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Which class of hardware the upstream runs on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolType {
@@ -113,7 +139,25 @@ mod tests {
     use std::net::SocketAddr;
     use std::time::Instant;
 
-    use super::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
+    use super::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamScheme, UpstreamStatus};
+
+    // ── UpstreamScheme ─────────────────────────────────────────────────────
+
+    #[test]
+    fn upstream_scheme_http_as_str() {
+        assert_eq!(UpstreamScheme::Http.as_str(), "http");
+    }
+
+    #[test]
+    fn upstream_scheme_https_as_str() {
+        assert_eq!(UpstreamScheme::Https.as_str(), "https");
+    }
+
+    #[test]
+    fn upstream_scheme_display() {
+        assert_eq!(format!("{}", UpstreamScheme::Http), "http");
+        assert_eq!(format!("{}", UpstreamScheme::Https), "https");
+    }
 
     // ── PoolSnapshot ────────────────────────────────────────────────────────
 

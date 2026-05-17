@@ -163,7 +163,8 @@ fn state_with(
     hedge_delay: Duration,
     control_timeout: Duration,
 ) -> AppState {
-    let state = AppState::new(config_with(hedge_delay, control_timeout));
+    let state =
+        AppState::new(config_with(hedge_delay, control_timeout)).expect("test state must build");
     let snapshot = PoolSnapshot {
         gpu: gpu
             .map(|a| vec![ok_upstream(a, PoolType::Gpu)])

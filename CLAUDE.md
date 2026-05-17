@@ -77,6 +77,10 @@ HTTP 503 when all pools are empty or unhealthy.
 | `BGE_ROUTER_HEARTBEAT_SECS` | `60` | Heartbeat log interval (`0` = disable) |
 | `BGE_ROUTER_LOG_FORMAT` | auto | `json` (non-TTY default), `text`, `pretty` |
 | `RUST_LOG` | `info` | Standard tracing filter |
+| `BGE_ROUTER_TLS_CERT_PATH` | _unset_ | Path to TLS certificate PEM for the inbound listener; requires `--features tls`. Both `TLS_CERT_PATH` and `TLS_KEY_PATH` must be set together or both absent. |
+| `BGE_ROUTER_TLS_KEY_PATH` | _unset_ | Path to TLS private key PEM for the inbound listener (paired with `TLS_CERT_PATH`). |
+| `BGE_ROUTER_UPSTREAM_TLS` | _unset_ | Set to `1`, `true`, or `yes` to use HTTPS for upstream bge-m3 connections. Uses the system CA store by default; use with `BGE_ROUTER_UPSTREAM_CA_BUNDLE` for a custom CA. |
+| `BGE_ROUTER_UPSTREAM_CA_BUNDLE` | _unset_ | Path to a CA bundle PEM to trust for upstream bge-m3 connections. Used together with `BGE_ROUTER_UPSTREAM_TLS=1`; a WARN is logged if the bundle is set without TLS enabled. |
 
 ## Architecture
 

@@ -25,7 +25,7 @@ use arc_swap::ArcSwap;
 use serde::Deserialize;
 
 use crate::config::Config;
-use crate::upstream::snapshot::{PoolSnapshot, UpstreamInfo, UpstreamStatus};
+use crate::upstream::snapshot::{PoolSnapshot, UpstreamInfo, UpstreamScheme, UpstreamStatus};
 
 /// Spawn the health-polling background task.
 pub fn spawn(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqwest::Client) {
@@ -35,15 +35,16 @@ pub fn spawn(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqw
 }
 
 async fn run(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>, client: reqwest::Client) {
+    let scheme = config.upstream_scheme();
     let mut interval = tokio::time::interval(config.health_poll);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         interval.tick().await;
-        poll_all(&pool, &client).await;
+        poll_all(&pool, &client, scheme).await;
     }
 }
 
-async fn poll_all(pool: &ArcSwap<PoolSnapshot>, client: &reqwest::Client) {
+async fn poll_all(pool: &ArcSwap<PoolSnapshot>, client: &reqwest::Client, scheme: UpstreamScheme) {
     let snapshot = pool.load_full();
     let addrs: Vec<_> = snapshot
         .gpu
@@ -57,7 +58,7 @@ async fn poll_all(pool: &ArcSwap<PoolSnapshot>, client: &reqwest::Client) {
     }
 
     // Poll all upstreams concurrently.
-    let results = poll_concurrent(client, addrs).await;
+    let results = poll_concurrent(client, addrs, scheme).await;
 
     // Apply updates to the snapshot.
     let current = pool.load();
@@ -75,11 +76,12 @@ struct PollResult {
 async fn poll_concurrent(
     client: &reqwest::Client,
     addrs: Vec<std::net::SocketAddr>,
+    scheme: UpstreamScheme,
 ) -> Vec<PollResult> {
     let mut set = tokio::task::JoinSet::new();
     for addr in addrs {
         let client = client.clone();
-        set.spawn(async move { poll_one(&client, addr).await });
+        set.spawn(async move { poll_one(&client, addr, scheme).await });
     }
     let mut results = Vec::new();
     while let Some(r) = set.join_next().await {
@@ -90,8 +92,12 @@ async fn poll_concurrent(
     results
 }
 
-async fn poll_one(client: &reqwest::Client, addr: std::net::SocketAddr) -> PollResult {
-    let url = format!("http://{addr}/health");
+async fn poll_one(
+    client: &reqwest::Client,
+    addr: std::net::SocketAddr,
+    scheme: UpstreamScheme,
+) -> PollResult {
+    let url = format!("{scheme}://{addr}/health");
     match client
         .get(&url)
         .timeout(std::time::Duration::from_secs(4))
