@@ -50,6 +50,24 @@ use std::sync::Arc;
 ///
 /// Returns an error if the config is invalid or the TCP listener fails to bind.
 pub async fn run() -> Result<()> {
+    // Install a rustls crypto provider before any rustls user (reqwest::Client,
+    // axum-server's RustlsConfig) is constructed.
+    //
+    // rustls 0.23+ refuses to auto-select when more than one provider is
+    // visible in the dep graph; bge-router pulls rustls through TWO paths:
+    //   - `reqwest` with `rustls-tls` feature   → defaults to aws-lc-rs
+    //   - `axum-server` with `tls-rustls` feat. → defaults to ring (transitively
+    //     via tokio-rustls)
+    // Both are present in the compiled binary, so rustls cannot pick. Without
+    // an explicit install, the process panics on the first ClientConfig build
+    // ("Could not automatically determine the process-level CryptoProvider").
+    //
+    // `.ok()` lets us re-enter this code from tests (where another test may
+    // have already installed a provider) without panicking.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .ok();
+
     let cfg = config::Config::from_env()?;
     let hedge_delay_ms = u64::try_from(cfg.hedge_delay.as_millis()).unwrap_or(u64::MAX);
     let control_timeout_ms = u64::try_from(cfg.control_timeout.as_millis()).unwrap_or(u64::MAX);

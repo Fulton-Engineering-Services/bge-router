@@ -1,6 +1,6 @@
 [package]
 name = "bge-router"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Transparent HTTP reverse proxy routing between BGE-M3 GPU and CPU upstream pools"
@@ -40,6 +40,12 @@ bytes = "1"
 http = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1"] }
+# Direct dep so we can call `rustls::crypto::aws_lc_rs::default_provider().install_default()`
+# in `run()` before any reqwest::Client or axum-server::tls_rustls::RustlsConfig is built.
+# rustls 0.23+ panics ("ambiguous CryptoProvider") at runtime when more than one
+# crypto provider appears in the dep graph — which happens here because
+# axum-server's `tls-rustls` and reqwest's `rustls-tls` pull different defaults.
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
