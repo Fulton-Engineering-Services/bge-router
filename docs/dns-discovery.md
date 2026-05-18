@@ -92,15 +92,20 @@ The discovery loop runs on an adaptive schedule rather than a fixed timer:
 
 | Condition | Sleep before next refresh |
 |---|---|
-| Both pools have addresses | `dns_refresh_secs` (default 30 s) |
-| Just transitioned to "either pool empty / failed" | 2 s (`INITIAL_RETRY_INTERVAL`) |
+| At least one pool has addresses | `dns_refresh_secs` (default 30 s) |
+| Just transitioned to "both pools empty / failed" | 2 s (`INITIAL_RETRY_INTERVAL`) |
 | Still unhealthy | double the previous sleep, capped at `dns_refresh_secs` |
+
+"Healthy" requires at least one pool to resolve. A missing GPU pool while
+CPU resolves (the normal state when GPU is scaled to zero or not deployed)
+does **not** trigger fast retry — the router is fully functional for CPU
+traffic in that configuration.
 
 Concretely, a cold start where both pools start empty produces this
 schedule: `0 s → 2 s → 4 s → 8 s → 16 s → 30 s → 30 s → …`. As soon as
-**both** pools have addresses from a successful resolution, the loop drops
-back to the steady-state interval. A subsequent failure resets the schedule
-to 2 s on the very next tick.
+**any** pool has addresses from a successful resolution, the loop drops
+back to the steady-state interval. A subsequent failure of all pools resets
+the schedule to 2 s on the very next tick.
 
 This pattern collapses cold-start time when an upstream service comes up
 shortly after the router boots — which is common with concurrent ECS
@@ -110,9 +115,16 @@ The discovery loop emits an INFO log on transitions into the healthy state
 and a WARN log on transitions out:
 
 ```
-INFO  ... "DNS discovery recovered: both pools populated"
-WARN  ... "DNS discovery degraded: at least one pool empty or unresolved; \
-            entering fast-retry backoff"
+INFO  ... "DNS discovery healthy: at least one pool populated"
+WARN  ... "DNS discovery failed: no upstream pools populated; entering fast-retry backoff"
+```
+
+Individual per-name DNS lookup failures are logged at INFO level. Only when
+**all** pools fail simultaneously does a WARN appear:
+
+```
+INFO  dns_name="bge-m3-gpu" err="..." "DNS lookup failed"
+WARN  gpu_dns="bge-m3-gpu" cpu_dns="bge-m3" "All upstream DNS lookups failed; ..."
 ```
 
 ## Scale-to-Zero Behaviour
@@ -126,8 +138,10 @@ The GPU pool can run at zero instances when idle. When all GPU tasks are stopped
 3. The health poller marks any still-pinned-but-actually-dead addresses
    `Fail` within ~5 s, so routing stops sending traffic to them regardless
    of which DNS outcome we get.
-4. With both pools eventually empty-or-failing, the discovery loop switches
-   to its fast-retry schedule (2 s, 4 s, 8 s, …).
+4. With the GPU pool gone and CPU still resolving, the discovery loop
+   remains in steady-state cadence (30 s) — one healthy pool is sufficient.
+   If the CPU pool also empties, the loop switches to fast-retry (2 s, 4 s,
+   8 s, …).
 5. All requests route to whichever pool still has healthy addresses
    (typically CPU).
 
