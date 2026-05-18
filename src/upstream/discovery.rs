@@ -36,12 +36,17 @@
 //!
 //! The loop uses `compute_next_interval` to back off on failure:
 //!
-//! - Steady state (both pools have addresses): refresh every
+//! - Steady state (at least one pool has addresses): refresh every
 //!   `config.dns_refresh` (default 30 s).
 //! - On transition healthy → unhealthy: drop to `INITIAL_RETRY_INTERVAL`
 //!   (2 s).
 //! - While unhealthy: double the previous interval each cycle, capped at
 //!   `config.dns_refresh`.
+//!
+//! "Healthy" requires at least one pool to resolve — a missing GPU pool while
+//! CPU resolves is normal in CPU-only or scale-to-zero deployments and does
+//! not trigger fast retry. Only when **both** pools fail to resolve is the
+//! router considered unhealthy and fast-retry engaged.
 //!
 //! This collapses cold-start latency when an upstream service comes up shortly
 //! after the router boots, without hammering DNS during extended outages.
@@ -102,7 +107,7 @@ async fn run(pool: Arc<ArcSwap<PoolSnapshot>>, config: Arc<Config>) {
         }
 
         let (gpu_result, cpu_result) = refresh(&pool, &config).await;
-        let healthy = gpu_result.has_addrs() && cpu_result.has_addrs();
+        let healthy = gpu_result.has_addrs() || cpu_result.has_addrs();
 
         if healthy != last_healthy {
             log_state_transition(last_healthy, healthy, &pool);
@@ -125,6 +130,18 @@ async fn refresh(pool: &ArcSwap<PoolSnapshot>, config: &Config) -> (ResolveResul
         "DNS refresh"
     );
 
+    // Warn only when every pool lookup fails simultaneously — that is the
+    // genuine alarm condition. A single-pool failure while the other pool
+    // resolves is INFO-level: traffic continues routing to the healthy pool.
+    if matches!(gpu_result, ResolveResult::Failed) && matches!(cpu_result, ResolveResult::Failed) {
+        tracing::warn!(
+            target: "bge_router::upstream::discovery",
+            gpu_dns = %config.gpu_dns,
+            cpu_dns = %config.cpu_dns,
+            "All upstream DNS lookups failed; pool preserved at last-known-good state"
+        );
+    }
+
     let current = pool.load();
     let new_snapshot = merge(&current, &gpu_result, &cpu_result);
     pool.store(Arc::new(new_snapshot));
@@ -140,7 +157,7 @@ async fn resolve(dns_name: &str, port: u16) -> ResolveResult {
     match result {
         Ok(addrs) => ResolveResult::Resolved(addrs.collect()),
         Err(e) => {
-            tracing::warn!(dns_name, err = %e, "DNS lookup failed");
+            tracing::info!(dns_name, err = %e, "DNS lookup failed");
             ResolveResult::Failed
         }
     }
@@ -248,15 +265,14 @@ fn log_state_transition(was_healthy: bool, is_healthy: bool, pool: &ArcSwap<Pool
             target: "bge_router::upstream::discovery",
             gpu_upstreams = snapshot.gpu.len(),
             cpu_upstreams = snapshot.cpu.len(),
-            "DNS discovery recovered: both pools populated"
+            "DNS discovery healthy: at least one pool populated"
         );
     } else if was_healthy {
         tracing::warn!(
             target: "bge_router::upstream::discovery",
             gpu_upstreams = snapshot.gpu.len(),
             cpu_upstreams = snapshot.cpu.len(),
-            "DNS discovery degraded: at least one pool empty or unresolved; \
-             entering fast-retry backoff"
+            "DNS discovery failed: no upstream pools populated; entering fast-retry backoff"
         );
     }
 }

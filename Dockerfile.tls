@@ -33,7 +33,7 @@ RUN touch src/main.rs src/lib.rs \
 FROM ubuntu:24.04@sha256:c4a8d5503dfb2a3eb8ab5f807da5bc69a85730fb49b5cfca2330194ebcc41c7b
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/bge-router /usr/local/bin/bge-router
@@ -44,7 +44,9 @@ LABEL org.opencontainers.image.title="bge-router" \
       org.opencontainers.image.licenses="Apache-2.0"
 
 EXPOSE 8081
+# -k: accept self-signed leaf cert; -f: fail on non-2xx; -sS: silent but show errors;
+# --max-time 4: fits within the 5s timeout budget; -o /dev/null: discard body.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081 && printf 'GET /router/health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && read -t5 s <&3 && [[ $s == *200* ]] || exit 1"]
+    CMD ["/usr/bin/curl", "-kfsS", "-o", "/dev/null", "--max-time", "4", "https://127.0.0.1:8081/router/health"]
 
 ENTRYPOINT ["/usr/local/bin/bge-router"]
