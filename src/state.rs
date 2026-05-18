@@ -53,7 +53,13 @@ impl AppState {
             })?;
             let cert = reqwest::Certificate::from_pem(&ca_pem)
                 .context("upstream CA bundle is not valid PEM")?;
-            client_builder = client_builder.add_root_certificate(cert);
+            client_builder = client_builder
+                .add_root_certificate(cert)
+                .danger_accept_invalid_hostnames(true);
+            tracing::warn!(
+                "upstream TLS: hostname verification disabled for upstream connections \
+                 (CA trust enforced); required for dynamic ECS task IPs"
+            );
         }
         let client = client_builder.build().context("building reqwest::Client")?;
         Ok(Self {
