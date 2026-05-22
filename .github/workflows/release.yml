@@ -122,6 +122,8 @@ jobs:
           fi
 
   # ── Docker build (native runners, parallel) ──────────────────────────
+  # Small stateless proxy images — standard github-hosted runners are sufficient.
+  # (Larger runner `bge-cuda-4core-linux-x64` is for bge-m3-embedding-server CUDA/TRT only.)
   build:
     name: Build (${{ matrix.platform }})
     needs: [version]
