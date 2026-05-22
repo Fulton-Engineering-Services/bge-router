@@ -18,17 +18,17 @@
 //! and exercises [`super::route`] end-to-end through real reqwest calls.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::sync::Once;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use axum::{
+    Router,
     extract::State,
     http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
     routing::any,
-    Router,
 };
 use bytes::Bytes;
 use tokio::net::TcpListener;
@@ -315,7 +315,7 @@ async fn control_plane_uses_per_upstream_timeout_and_falls_back_to_cpu() {
     let state = state_with(
         Some(gpu.addr),
         Some(cpu.addr),
-        Duration::from_secs(60), // hedge delay should not be touched here
+        Duration::from_mins(1), // hedge delay should not be touched here
         Duration::from_millis(100),
     );
 

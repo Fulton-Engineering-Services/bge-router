@@ -117,7 +117,7 @@ pub async fn forward(
 mod tests {
     use std::net::SocketAddr;
 
-    use super::{upstream_url, UpstreamScheme};
+    use super::{UpstreamScheme, upstream_url};
 
     #[test]
     fn upstream_url_http_scheme() {
