@@ -85,6 +85,7 @@ struct UpstreamView {
     queue_depth: u32,
     live_workers: u32,
     last_seen_secs_ago: f64,
+    cooldown_remaining_secs: Option<f64>,
 }
 
 impl UpstreamView {
@@ -104,6 +105,10 @@ impl UpstreamView {
             queue_depth: info.queue_depth,
             live_workers: info.live_workers,
             last_seen_secs_ago: now.duration_since(info.last_seen).as_secs_f64(),
+            cooldown_remaining_secs: info
+                .cooldown_until
+                .map(|t| t.saturating_duration_since(now).as_secs_f64())
+                .filter(|s| *s > 0.0),
         }
     }
 }
@@ -132,6 +137,10 @@ mod tests {
             health_poll: Duration::from_secs(5),
             hedge_delay: Duration::from_secs(5),
             control_timeout: Duration::from_secs(1),
+            retry_count: 3,
+            retry_initial_backoff: Duration::from_millis(100),
+            retry_max_backoff: Duration::from_secs(1),
+            cooldown: Duration::from_secs(30),
             legacy_fallback_budget_set: false,
             heartbeat: Duration::from_mins(1),
             tls_cert_path: None,
@@ -149,6 +158,7 @@ mod tests {
             queue_depth: 0,
             live_workers: 8,
             last_seen: Instant::now(),
+            cooldown_until: None,
         }
     }
 
@@ -198,6 +208,7 @@ mod tests {
                 queue_depth: 0,
                 live_workers: 8,
                 last_seen: std::time::Instant::now(),
+                cooldown_until: None,
             }],
             updated_at: std::time::Instant::now(),
         };

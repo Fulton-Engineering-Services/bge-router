@@ -109,6 +109,17 @@ pub struct UpstreamInfo {
     pub live_workers: u32,
     /// Monotonic timestamp of the last successful health poll.
     pub last_seen: Instant,
+    /// End of circuit-breaker cooldown. While this is in the future, the
+    /// upstream is excluded from routing decisions.
+    pub cooldown_until: Option<Instant>,
+}
+
+impl UpstreamInfo {
+    /// Returns `true` when this upstream is still in cooldown.
+    #[must_use]
+    pub fn is_in_cooldown(&self, now: Instant) -> bool {
+        self.cooldown_until.is_some_and(|until| until > now)
+    }
 }
 
 /// Immutable snapshot of both upstream pools at a point in time.
@@ -244,6 +255,7 @@ mod tests {
             queue_depth: 5,
             live_workers: 8,
             last_seen: Instant::now(),
+            cooldown_until: None,
         };
         assert_eq!(info.addr, addr);
         assert_eq!(info.pool_type, PoolType::Gpu);
@@ -262,6 +274,7 @@ mod tests {
             queue_depth: 0,
             live_workers: 2,
             last_seen: Instant::now(),
+            cooldown_until: None,
         };
         let cloned = original.clone();
         assert_eq!(cloned.addr, original.addr);
@@ -269,5 +282,51 @@ mod tests {
         assert_eq!(cloned.status, original.status);
         assert_eq!(cloned.queue_depth, original.queue_depth);
         assert_eq!(cloned.live_workers, original.live_workers);
+    }
+
+    // ── UpstreamInfo::is_in_cooldown ────────────────────────────────────────
+
+    #[test]
+    fn cooldown_none_is_not_in_cooldown() {
+        let info = UpstreamInfo {
+            addr: "10.0.0.3:8081".parse().unwrap(),
+            pool_type: PoolType::Gpu,
+            status: UpstreamStatus::Ok,
+            queue_depth: 0,
+            live_workers: 1,
+            last_seen: Instant::now(),
+            cooldown_until: None,
+        };
+        assert!(!info.is_in_cooldown(Instant::now()));
+    }
+
+    #[test]
+    fn cooldown_past_is_not_in_cooldown() {
+        let now = Instant::now();
+        let info = UpstreamInfo {
+            addr: "10.0.0.4:8081".parse().unwrap(),
+            pool_type: PoolType::Gpu,
+            status: UpstreamStatus::Ok,
+            queue_depth: 0,
+            live_workers: 1,
+            last_seen: now,
+            cooldown_until: Some(now),
+        };
+        assert!(!info.is_in_cooldown(Instant::now()));
+    }
+
+    #[test]
+    fn cooldown_future_is_in_cooldown() {
+        let now = Instant::now();
+        let info = UpstreamInfo {
+            addr: "10.0.0.5:8081".parse().unwrap(),
+            pool_type: PoolType::Cpu,
+            status: UpstreamStatus::Loading,
+            queue_depth: 0,
+            live_workers: 1,
+            last_seen: now,
+            cooldown_until: Some(now + std::time::Duration::from_secs(5)),
+        };
+        assert!(info.is_in_cooldown(Instant::now()));
     }
 }

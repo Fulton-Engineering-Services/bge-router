@@ -19,6 +19,7 @@
 //! - [`health`] — per-upstream `/health` poller (updates `status`, `queue_depth`)
 //! - [`snapshot`] — [`PoolSnapshot`] and [`UpstreamInfo`] types
 
+pub mod circuit_breaker;
 pub mod discovery;
 pub mod health;
 pub mod snapshot;

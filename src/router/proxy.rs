@@ -19,7 +19,9 @@
 //! Hop-by-hop headers are stripped; observability headers are injected.
 
 use std::net::SocketAddr;
+use std::time::Duration;
 
+use arc_swap::ArcSwap;
 use axum::{
     body::Body,
     http::{HeaderMap, HeaderName, Method, StatusCode},
@@ -28,6 +30,8 @@ use axum::{
 use bytes::Bytes;
 
 use crate::error::AppError;
+use crate::upstream::circuit_breaker;
+use crate::upstream::snapshot::PoolSnapshot;
 use crate::upstream::snapshot::{PoolType, UpstreamScheme};
 
 /// Hop-by-hop headers that must not be forwarded to the upstream or the client.
@@ -50,6 +54,19 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
 /// Build an upstream URL from scheme, address, and path.
 fn upstream_url(scheme: UpstreamScheme, addr: SocketAddr, path_and_query: &str) -> String {
     format!("{scheme}://{addr}{path_and_query}")
+}
+
+/// Retry tuning for upstream proxy requests.
+#[derive(Debug, Clone, Copy)]
+pub struct RetryConfig {
+    /// Number of retries after the initial attempt.
+    pub max_retries: u32,
+    /// Initial retry backoff.
+    pub initial_backoff: Duration,
+    /// Maximum retry backoff.
+    pub max_backoff: Duration,
+    /// Cooldown window after all attempts fail.
+    pub cooldown: Duration,
 }
 
 /// Forward a buffered request to `addr` and return a streaming [`Response`].
@@ -111,6 +128,75 @@ pub async fn forward(
     *response.headers_mut() = resp_headers;
 
     Ok(response)
+}
+
+/// Forward with retry/backoff and circuit-breaker cooldown on exhaustion.
+///
+/// A retryable failure is either an upstream transport error or an HTTP 5xx
+/// status code. 4xx responses are returned immediately.
+///
+/// # Errors
+///
+/// Returns the last transport error or HTTP response outcome from [`forward`]
+/// after retries are exhausted.
+#[allow(clippy::too_many_arguments)]
+pub async fn forward_with_retry(
+    client: &reqwest::Client,
+    pool: &ArcSwap<PoolSnapshot>,
+    retry_cfg: RetryConfig,
+    scheme: UpstreamScheme,
+    addr: SocketAddr,
+    pool_type: PoolType,
+    method: &Method,
+    path_and_query: &str,
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<Response, AppError> {
+    let mut backoff = retry_cfg.initial_backoff;
+    for attempt in 0..=retry_cfg.max_retries {
+        let result = forward(
+            client,
+            scheme,
+            addr,
+            pool_type,
+            method,
+            path_and_query,
+            headers,
+            body.clone(),
+        )
+        .await;
+        let is_retryable = match &result {
+            Ok(resp) => resp.status().is_server_error(),
+            Err(_) => true,
+        };
+        if !is_retryable {
+            return result;
+        }
+        if attempt == retry_cfg.max_retries {
+            circuit_breaker::trip(pool, addr, retry_cfg.cooldown);
+            tracing::warn!(
+                upstream = %addr,
+                pool = pool_type.as_str(),
+                attempts = retry_cfg.max_retries + 1,
+                cooldown_secs = retry_cfg.cooldown.as_secs(),
+                "upstream retries exhausted; tripping cooldown"
+            );
+            return result;
+        }
+
+        tracing::info!(
+            upstream = %addr,
+            pool = pool_type.as_str(),
+            attempt = attempt + 1,
+            max_retries = retry_cfg.max_retries,
+            backoff_ms = backoff.as_millis(),
+            "upstream 5xx/error, retrying"
+        );
+        tokio::time::sleep(backoff).await;
+        backoff = backoff.saturating_mul(2).min(retry_cfg.max_backoff);
+    }
+
+    Err(AppError::NoUpstreamAvailable)
 }
 
 #[cfg(test)]

@@ -20,6 +20,7 @@ use anyhow::Context;
 use arc_swap::ArcSwap;
 
 use crate::config::Config;
+use crate::router::proxy::RetryConfig;
 use crate::upstream::snapshot::{PoolSnapshot, UpstreamScheme};
 
 /// Shared state available to every request handler via [`axum::extract::State`].
@@ -74,5 +75,16 @@ impl AppState {
     #[must_use]
     pub fn upstream_scheme(&self) -> UpstreamScheme {
         self.config.upstream_scheme()
+    }
+
+    /// Return the request retry/cooldown settings for upstream proxying.
+    #[must_use]
+    pub fn retry_config(&self) -> RetryConfig {
+        RetryConfig {
+            max_retries: self.config.retry_count,
+            initial_backoff: self.config.retry_initial_backoff,
+            max_backoff: self.config.retry_max_backoff,
+            cooldown: self.config.cooldown,
+        }
     }
 }

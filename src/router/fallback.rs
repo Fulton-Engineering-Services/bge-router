@@ -124,7 +124,7 @@ async fn hedged_race(
         (None, None) => Err(AppError::NoUpstreamAvailable),
         // No GPU — go straight to CPU with no hedge.
         (None, Some((cpu_addr, _))) => {
-            let result = forward(&state.client, cpu_addr, PoolType::Cpu, &ctx).await;
+            let result = forward(state, cpu_addr, PoolType::Cpu, &ctx).await;
             if let Ok(ref resp) = result {
                 log_direct(
                     path_and_query,
@@ -138,7 +138,7 @@ async fn hedged_race(
         }
         // No CPU — GPU only, no hedge to fire against.
         (Some((gpu_addr, _)), None) => {
-            let result = forward(&state.client, gpu_addr, PoolType::Gpu, &ctx).await;
+            let result = forward(state, gpu_addr, PoolType::Gpu, &ctx).await;
             if let Ok(ref resp) = result {
                 log_direct(
                     path_and_query,
@@ -165,13 +165,15 @@ async fn hedged_race(
 }
 
 async fn forward(
-    client: &reqwest::Client,
+    state: &AppState,
     addr: SocketAddr,
     pool_type: PoolType,
     ctx: &ForwardCtx<'_>,
 ) -> Result<Response, AppError> {
-    proxy::forward(
-        client,
+    proxy::forward_with_retry(
+        &state.client,
+        &state.pool,
+        state.retry_config(),
         ctx.scheme,
         addr,
         pool_type,
@@ -194,7 +196,7 @@ async fn run_race(
     let start = Instant::now();
     let cpu_started = Arc::new(AtomicBool::new(false));
 
-    let gpu_fut = forward(&state.client, gpu_addr, PoolType::Gpu, ctx);
+    let gpu_fut = forward(state, gpu_addr, PoolType::Gpu, ctx);
 
     // CPU fires only after hedge_delay.  Capture by reference; the async
     // block lives no longer than this stack frame.
@@ -210,7 +212,7 @@ async fn run_race(
             cpu_upstream = %cpu_addr,
             "hedge: firing CPU race"
         );
-        forward(&state.client, cpu_addr, PoolType::Cpu, ctx).await
+        forward(state, cpu_addr, PoolType::Cpu, ctx).await
     };
 
     tokio::pin!(gpu_fut);
@@ -416,8 +418,10 @@ async fn sequential_timeout(
     if let Some((gpu_addr, _)) = gpu_candidate {
         let result = tokio::time::timeout(
             per_upstream,
-            proxy::forward(
+            proxy::forward_with_retry(
                 &state.client,
+                &state.pool,
+                state.retry_config(),
                 scheme,
                 gpu_addr,
                 PoolType::Gpu,
@@ -493,8 +497,10 @@ async fn forward_cpu_with_timeout(
 ) -> Result<Response, AppError> {
     let result = tokio::time::timeout(
         per_upstream,
-        proxy::forward(
+        proxy::forward_with_retry(
             &state.client,
+            &state.pool,
+            state.retry_config(),
             state.upstream_scheme(),
             cpu_addr,
             PoolType::Cpu,

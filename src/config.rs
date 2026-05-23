@@ -27,6 +27,14 @@ use crate::upstream::snapshot::UpstreamScheme;
 const DEFAULT_HEDGE_DELAY_MS: u64 = 5_000;
 /// Default per-upstream timeout for control-plane routes (1 second).
 const DEFAULT_CONTROL_TIMEOUT_MS: u64 = 1_000;
+/// Default number of retries after the initial upstream attempt.
+const DEFAULT_RETRY_COUNT: u64 = 3;
+/// Default initial retry backoff.
+const DEFAULT_RETRY_INITIAL_BACKOFF_MS: u64 = 100;
+/// Default cap for exponential retry backoff.
+const DEFAULT_RETRY_MAX_BACKOFF_MS: u64 = 1_000;
+/// Default cooldown duration after exhausting retries.
+const DEFAULT_COOLDOWN_SECS: u64 = 30;
 
 /// Resolved runtime configuration derived from environment variables.
 #[derive(Debug, Clone)]
@@ -49,6 +57,19 @@ pub struct Config {
     /// Per-upstream hard timeout for control-plane routes (`/health`, `/v1/models`,
     /// etc.) — `BGE_ROUTER_CONTROL_TIMEOUT_MS`, default 1000.
     pub control_timeout: Duration,
+    /// Number of retries after the initial request attempt on a single upstream.
+    /// Env: `BGE_ROUTER_RETRY_COUNT`, default `3`.
+    pub retry_count: u32,
+    /// Initial delay before retrying a failed upstream attempt.
+    /// Env: `BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS`, default `100`.
+    pub retry_initial_backoff: Duration,
+    /// Maximum delay cap for exponential retry backoff.
+    /// Env: `BGE_ROUTER_RETRY_MAX_BACKOFF_MS`, default `1000`.
+    pub retry_max_backoff: Duration,
+    /// Cooldown duration after retry exhaustion; `0` disables tripping while
+    /// keeping retries enabled.
+    /// Env: `BGE_ROUTER_COOLDOWN_SECS`, default `30`.
+    pub cooldown: Duration,
     /// `true` when the deployment set the deprecated `BGE_ROUTER_FALLBACK_BUDGET_MS`
     /// env var.  When set without the new vars, it is honoured as the default for
     /// `hedge_delay` for safer migration; a one-time WARN is logged at startup.
@@ -127,6 +148,28 @@ impl Config {
         if control_timeout_ms == 0 {
             bail!("invalid BGE_ROUTER_CONTROL_TIMEOUT_MS: must be > 0 (got 0)");
         }
+        let retry_count_raw = parse_u64("BGE_ROUTER_RETRY_COUNT", DEFAULT_RETRY_COUNT, &lookup)?;
+        let retry_count = u32::try_from(retry_count_raw)
+            .context("invalid BGE_ROUTER_RETRY_COUNT: value exceeds u32::MAX")?;
+        let retry_initial_backoff_ms = parse_u64(
+            "BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS",
+            DEFAULT_RETRY_INITIAL_BACKOFF_MS,
+            &lookup,
+        )?;
+        if retry_initial_backoff_ms == 0 {
+            bail!("invalid BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS: must be > 0 (got 0)");
+        }
+        let retry_max_backoff_ms = parse_u64(
+            "BGE_ROUTER_RETRY_MAX_BACKOFF_MS",
+            DEFAULT_RETRY_MAX_BACKOFF_MS,
+            &lookup,
+        )?;
+        if retry_max_backoff_ms < retry_initial_backoff_ms {
+            bail!(
+                "invalid BGE_ROUTER_RETRY_MAX_BACKOFF_MS: must be >= BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS"
+            );
+        }
+        let cooldown_secs = parse_u64("BGE_ROUTER_COOLDOWN_SECS", DEFAULT_COOLDOWN_SECS, &lookup)?;
 
         let tls_cert_path = lookup("BGE_ROUTER_TLS_CERT_PATH").map(std::path::PathBuf::from);
         let tls_key_path = lookup("BGE_ROUTER_TLS_KEY_PATH").map(std::path::PathBuf::from);
@@ -153,6 +196,10 @@ impl Config {
             health_poll: Duration::from_secs(health_poll_secs),
             hedge_delay: Duration::from_millis(hedge_delay_ms),
             control_timeout: Duration::from_millis(control_timeout_ms),
+            retry_count,
+            retry_initial_backoff: Duration::from_millis(retry_initial_backoff_ms),
+            retry_max_backoff: Duration::from_millis(retry_max_backoff_ms),
+            cooldown: Duration::from_secs(cooldown_secs),
             legacy_fallback_budget_set,
             heartbeat: Duration::from_secs(heartbeat_secs),
             tls_cert_path,

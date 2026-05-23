@@ -31,6 +31,7 @@
 //! yet able to process) and `Fail`/`Unknown` upstreams are never selected.
 
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use crate::upstream::snapshot::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
 
@@ -39,27 +40,36 @@ use crate::upstream::snapshot::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamSt
 /// Returns `(addr, pool_type)` or `None` if no routable upstream is available.
 #[must_use]
 pub fn pick(snapshot: &PoolSnapshot) -> Option<(SocketAddr, PoolType)> {
-    pick_ok(&snapshot.gpu, PoolType::Gpu)
-        .or_else(|| pick_ok(&snapshot.cpu, PoolType::Cpu))
-        .or_else(|| pick_loading(&snapshot.gpu, PoolType::Gpu))
-        .or_else(|| pick_loading(&snapshot.cpu, PoolType::Cpu))
+    let now = Instant::now();
+    pick_ok(&snapshot.gpu, PoolType::Gpu, now)
+        .or_else(|| pick_ok(&snapshot.cpu, PoolType::Cpu, now))
+        .or_else(|| pick_loading(&snapshot.gpu, PoolType::Gpu, now))
+        .or_else(|| pick_loading(&snapshot.cpu, PoolType::Cpu, now))
 }
 
 /// Pick the best GPU upstream, or `None` if no routable GPU is available.
 #[must_use]
 pub fn pick_gpu(snapshot: &PoolSnapshot) -> Option<(SocketAddr, PoolType)> {
-    pick_ok(&snapshot.gpu, PoolType::Gpu).or_else(|| pick_loading(&snapshot.gpu, PoolType::Gpu))
+    let now = Instant::now();
+    pick_ok(&snapshot.gpu, PoolType::Gpu, now)
+        .or_else(|| pick_loading(&snapshot.gpu, PoolType::Gpu, now))
 }
 
 /// Pick the best CPU upstream, or `None` if no routable CPU is available.
 #[must_use]
 pub fn pick_cpu(snapshot: &PoolSnapshot) -> Option<(SocketAddr, PoolType)> {
-    pick_ok(&snapshot.cpu, PoolType::Cpu).or_else(|| pick_loading(&snapshot.cpu, PoolType::Cpu))
+    let now = Instant::now();
+    pick_ok(&snapshot.cpu, PoolType::Cpu, now)
+        .or_else(|| pick_loading(&snapshot.cpu, PoolType::Cpu, now))
 }
 
-fn pick_ok(pool: &[UpstreamInfo], pool_type: PoolType) -> Option<(SocketAddr, PoolType)> {
+fn pick_ok(
+    pool: &[UpstreamInfo],
+    pool_type: PoolType,
+    now: Instant,
+) -> Option<(SocketAddr, PoolType)> {
     pool.iter()
-        .filter(|u| u.status == UpstreamStatus::Ok)
+        .filter(|u| u.status == UpstreamStatus::Ok && !u.is_in_cooldown(now))
         .min_by_key(|u| u.queue_depth)
         .map(|u| (u.addr, pool_type))
 }
@@ -69,9 +79,15 @@ fn pick_ok(pool: &[UpstreamInfo], pool_type: PoolType) -> Option<(SocketAddr, Po
 /// `live_workers > 0` means the upstream process is running and will accept
 /// requests (it will reload its models on the first request). Upstreams with
 /// `live_workers == 0` are still initialising and cannot serve anything yet.
-fn pick_loading(pool: &[UpstreamInfo], pool_type: PoolType) -> Option<(SocketAddr, PoolType)> {
+fn pick_loading(
+    pool: &[UpstreamInfo],
+    pool_type: PoolType,
+    now: Instant,
+) -> Option<(SocketAddr, PoolType)> {
     pool.iter()
-        .filter(|u| u.status == UpstreamStatus::Loading && u.live_workers > 0)
+        .filter(|u| {
+            u.status == UpstreamStatus::Loading && u.live_workers > 0 && !u.is_in_cooldown(now)
+        })
         .min_by_key(|u| u.queue_depth)
         .map(|u| (u.addr, pool_type))
 }
