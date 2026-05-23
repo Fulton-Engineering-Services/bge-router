@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::upstream::snapshot::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
 
@@ -32,6 +32,7 @@ fn make_upstream(
         queue_depth: depth,
         live_workers: 4,
         last_seen: Instant::now(),
+        cooldown_until: None,
     }
 }
 
@@ -236,6 +237,7 @@ fn loading_upstream_with_zero_live_workers_is_skipped() {
         queue_depth: 0,
         live_workers: 0,
         last_seen: std::time::Instant::now(),
+        cooldown_until: None,
     };
     let snap = snapshot(vec![], vec![cpu]);
     assert!(
@@ -306,4 +308,23 @@ fn pick_cpu_ignores_gpu_pool() {
         pick_cpu(&snap).is_none(),
         "pick_cpu should not look at gpu pool"
     );
+}
+
+#[test]
+fn pick_gpu_skips_cooled_down_ok_upstream() {
+    let mut cooling = make_upstream("10.0.0.1:8081", PoolType::Gpu, UpstreamStatus::Ok, 0);
+    cooling.cooldown_until = Some(Instant::now() + Duration::from_secs(30));
+    let available = make_upstream("10.0.0.2:8081", PoolType::Gpu, UpstreamStatus::Ok, 1);
+    let snap = snapshot(vec![cooling, available], vec![]);
+    let (addr, pool) = pick_gpu(&snap).expect("second GPU should be selected");
+    assert_eq!(pool, PoolType::Gpu);
+    assert_eq!(addr, "10.0.0.2:8081".parse::<SocketAddr>().unwrap());
+}
+
+#[test]
+fn pick_gpu_returns_none_when_all_in_cooldown() {
+    let mut cooling = make_upstream("10.0.0.1:8081", PoolType::Gpu, UpstreamStatus::Ok, 0);
+    cooling.cooldown_until = Some(Instant::now() + Duration::from_secs(30));
+    let snap = snapshot(vec![cooling], vec![]);
+    assert!(pick_gpu(&snap).is_none());
 }

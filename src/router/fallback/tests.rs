@@ -35,6 +35,7 @@ use tokio::net::TcpListener;
 
 use super::route;
 use crate::config::Config;
+use crate::error::AppError;
 use crate::state::AppState;
 use crate::upstream::snapshot::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
 
@@ -141,6 +142,9 @@ fn config_with(hedge_delay: Duration, control_timeout: Duration) -> Config {
     Config::from_lookup(|key| match key {
         "BGE_ROUTER_HEDGE_DELAY_MS" => Some(hedge_delay.as_millis().to_string()),
         "BGE_ROUTER_CONTROL_TIMEOUT_MS" => Some(control_timeout.as_millis().to_string()),
+        "BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS" => Some("1".to_string()),
+        "BGE_ROUTER_RETRY_MAX_BACKOFF_MS" => Some("2".to_string()),
+        "BGE_ROUTER_COOLDOWN_SECS" => Some("30".to_string()),
         _ => None,
     })
     .expect("test config must build")
@@ -154,6 +158,7 @@ fn ok_upstream(addr: SocketAddr, pool_type: PoolType) -> UpstreamInfo {
         queue_depth: 0,
         live_workers: 1,
         last_seen: Instant::now(),
+        cooldown_until: None,
     }
 }
 
@@ -301,6 +306,16 @@ async fn hedged_race_both_fail_returns_gpu_error() {
         Some("gpu"),
         "GPU's response is the canonical failure to surface"
     );
+    assert_eq!(
+        gpu.received.load(Ordering::SeqCst),
+        4,
+        "GPU should receive initial attempt + 3 retries"
+    );
+    assert_eq!(
+        cpu.received.load(Ordering::SeqCst),
+        4,
+        "CPU should receive initial attempt + 3 retries"
+    );
 }
 
 // ── Sequential timeout (control-plane paths) ────────────────────────────────
@@ -346,6 +361,57 @@ async fn control_plane_uses_per_upstream_timeout_and_falls_back_to_cpu() {
         .get("x-bge-router-pool")
         .map(|v| v.to_str().unwrap().to_owned());
     assert_eq!(pool_header.as_deref(), Some("cpu"));
+}
+
+#[tokio::test]
+async fn upstream_is_cooled_down_after_retry_exhaustion() {
+    let gpu = spawn_mock(500, Duration::from_millis(5)).await;
+    let state = state_with(
+        Some(gpu.addr),
+        None,
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+    );
+
+    let first = route(
+        &state,
+        Method::POST,
+        "/v1/embeddings",
+        HeaderMap::new(),
+        Bytes::from_static(b"{}"),
+    )
+    .await
+    .expect("single GPU response should still return response");
+    assert_eq!(first.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        gpu.received.load(Ordering::SeqCst),
+        4,
+        "initial attempt plus 3 retries"
+    );
+
+    let snapshot = state.pool.load_full();
+    assert!(
+        snapshot.gpu[0].cooldown_until.is_some(),
+        "retry exhaustion should place upstream in cooldown"
+    );
+
+    let second = route(
+        &state,
+        Method::POST,
+        "/v1/embeddings",
+        HeaderMap::new(),
+        Bytes::from_static(b"{}"),
+    )
+    .await;
+    assert!(
+        matches!(second, Err(AppError::NoUpstreamAvailable)),
+        "cooled-down upstream should be excluded from routing"
+    );
+    assert_eq!(
+        gpu.received.load(Ordering::SeqCst),
+        4,
+        "no additional request should be sent while cooldown is active"
+    );
 }
 
 // ── Back-compat: legacy BGE_ROUTER_FALLBACK_BUDGET_MS ───────────────────────
