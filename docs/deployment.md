@@ -132,6 +132,8 @@ Outbound TLS (`BGE_ROUTER_UPSTREAM_TLS`) does not require `--features tls`.
 
 Returns the router's current view of the upstream pool. Use this for load balancer / orchestrator health checks and debugging.
 
+> **Security note:** `/router/health` exposes internal VPC IP addresses, queue depths, live worker counts, and circuit-breaker cooldown state for all discovered upstreams. This endpoint must be restricted to internal callers only via security group rules or ALB listener conditions. Never expose `/router/health` on a public-facing ALB listener.
+
 ```bash
 curl http://localhost:8081/router/health | jq .
 ```

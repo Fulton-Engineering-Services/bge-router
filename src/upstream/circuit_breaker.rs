@@ -30,7 +30,18 @@ pub fn trip(pool: &ArcSwap<PoolSnapshot>, addr: SocketAddr, duration: Duration) 
     if duration.is_zero() {
         return;
     }
-    let until = Instant::now() + duration;
+    // Fast path: if the upstream is already in cooldown, skip the rcu allocation entirely.
+    let now = Instant::now();
+    let snapshot = pool.load();
+    let already_cooled = snapshot
+        .gpu
+        .iter()
+        .chain(snapshot.cpu.iter())
+        .any(|u| u.addr == addr && u.is_in_cooldown(now));
+    if already_cooled {
+        return;
+    }
+    let until = now + duration;
     pool.rcu(|snapshot| {
         let mut next = snapshot.as_ref().clone();
         let mut changed = false;
@@ -75,6 +86,22 @@ mod tests {
             last_seen: Instant::now(),
             cooldown_until: None,
         }
+    }
+
+    #[test]
+    fn trip_zero_duration_is_a_no_op() {
+        let snapshot = PoolSnapshot {
+            gpu: vec![upstream("10.0.0.1:8081", PoolType::Gpu)],
+            cpu: vec![],
+            updated_at: Instant::now(),
+        };
+        let pool = ArcSwap::from_pointee(snapshot);
+        trip(&pool, "10.0.0.1:8081".parse().unwrap(), Duration::ZERO);
+        let current = pool.load();
+        assert!(
+            current.gpu[0].cooldown_until.is_none(),
+            "zero duration must not set cooldown"
+        );
     }
 
     #[test]

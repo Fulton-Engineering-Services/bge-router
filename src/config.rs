@@ -35,6 +35,26 @@ const DEFAULT_RETRY_INITIAL_BACKOFF_MS: u64 = 100;
 const DEFAULT_RETRY_MAX_BACKOFF_MS: u64 = 1_000;
 /// Default cooldown duration after exhausting retries.
 const DEFAULT_COOLDOWN_SECS: u64 = 30;
+/// Maximum allowed retry count — guards against operator misconfiguration that
+/// would flood upstream pools (e.g. `BGE_ROUTER_RETRY_COUNT=300` would cause
+/// up to `2 × (1 + 300)` upstream calls per inference request via hedged race).
+const MAX_RETRY_COUNT: u32 = 20;
+
+/// Retry and cooldown tuning for upstream proxy requests.
+///
+/// Populated from [`Config`] by [`crate::state::AppState::retry_config`] and
+/// threaded into [`crate::router::proxy::forward_with_retry`].
+#[derive(Debug, Clone, Copy)]
+pub struct RetryConfig {
+    /// Number of retries after the initial attempt.
+    pub max_retries: u32,
+    /// Initial retry backoff.
+    pub initial_backoff: Duration,
+    /// Maximum retry backoff.
+    pub max_backoff: Duration,
+    /// Cooldown window after all attempts fail. Zero disables tripping.
+    pub cooldown: Duration,
+}
 
 /// Resolved runtime configuration derived from environment variables.
 #[derive(Debug, Clone)]
@@ -151,6 +171,11 @@ impl Config {
         let retry_count_raw = parse_u64("BGE_ROUTER_RETRY_COUNT", DEFAULT_RETRY_COUNT, &lookup)?;
         let retry_count = u32::try_from(retry_count_raw)
             .context("invalid BGE_ROUTER_RETRY_COUNT: value exceeds u32::MAX")?;
+        if retry_count > MAX_RETRY_COUNT {
+            bail!(
+                "invalid BGE_ROUTER_RETRY_COUNT: {retry_count} exceeds maximum of {MAX_RETRY_COUNT}"
+            );
+        }
         let retry_initial_backoff_ms = parse_u64(
             "BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS",
             DEFAULT_RETRY_INITIAL_BACKOFF_MS,
@@ -170,6 +195,7 @@ impl Config {
             );
         }
         let cooldown_secs = parse_u64("BGE_ROUTER_COOLDOWN_SECS", DEFAULT_COOLDOWN_SECS, &lookup)?;
+        // Zero is valid — it disables circuit-breaker tripping while keeping retries active.
 
         let tls_cert_path = lookup("BGE_ROUTER_TLS_CERT_PATH").map(std::path::PathBuf::from);
         let tls_key_path = lookup("BGE_ROUTER_TLS_KEY_PATH").map(std::path::PathBuf::from);
@@ -208,6 +234,17 @@ impl Config {
                 .map(std::path::PathBuf::from),
             upstream_tls,
         })
+    }
+
+    /// Build a [`RetryConfig`] from this configuration.
+    #[must_use]
+    pub fn retry_config(&self) -> RetryConfig {
+        RetryConfig {
+            max_retries: self.retry_count,
+            initial_backoff: self.retry_initial_backoff,
+            max_backoff: self.retry_max_backoff,
+            cooldown: self.cooldown,
+        }
     }
 
     /// Return the [`UpstreamScheme`] to use when contacting upstream bge-m3

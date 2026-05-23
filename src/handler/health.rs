@@ -291,4 +291,75 @@ mod tests {
             "body must contain 'cpu_upstreams'"
         );
     }
+
+    #[tokio::test]
+    async fn cooled_down_upstream_shows_cooldown_remaining_secs() {
+        let state = AppState::new(test_config()).expect("test state must build");
+        let snapshot = PoolSnapshot {
+            gpu: vec![UpstreamInfo {
+                addr: "10.0.0.1:8081".parse::<SocketAddr>().unwrap(),
+                pool_type: PoolType::Gpu,
+                status: UpstreamStatus::Ok,
+                queue_depth: 0,
+                live_workers: 1,
+                last_seen: Instant::now(),
+                cooldown_until: Some(Instant::now() + Duration::from_secs(10)),
+            }],
+            cpu: vec![],
+            updated_at: Instant::now(),
+        };
+        state.pool.store(Arc::new(snapshot));
+
+        let app = crate::bootstrap::router::build(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/router/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let gpu = &body["gpu_upstreams"][0];
+        let remaining = gpu["cooldown_remaining_secs"]
+            .as_f64()
+            .expect("cooldown_remaining_secs must be a number when upstream is in cooldown");
+        assert!(
+            remaining > 0.0 && remaining <= 10.0,
+            "cooldown_remaining_secs should be within (0, 10]: {remaining}"
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_not_in_cooldown_has_null_cooldown_remaining_secs() {
+        let state = AppState::new(test_config()).expect("test state must build");
+        let snapshot = PoolSnapshot {
+            gpu: vec![ok_gpu_upstream("10.0.0.1:8081")],
+            cpu: vec![],
+            updated_at: Instant::now(),
+        };
+        state.pool.store(Arc::new(snapshot));
+
+        let app = crate::bootstrap::router::build(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/router/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body["gpu_upstreams"][0]["cooldown_remaining_secs"].is_null(),
+            "upstream not in cooldown must have null cooldown_remaining_secs"
+        );
+    }
 }

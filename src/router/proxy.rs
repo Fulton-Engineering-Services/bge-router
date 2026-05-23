@@ -19,7 +19,6 @@
 //! Hop-by-hop headers are stripped; observability headers are injected.
 
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use axum::{
@@ -29,6 +28,7 @@ use axum::{
 };
 use bytes::Bytes;
 
+use crate::config::RetryConfig;
 use crate::error::AppError;
 use crate::upstream::circuit_breaker;
 use crate::upstream::snapshot::PoolSnapshot;
@@ -54,19 +54,6 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
 /// Build an upstream URL from scheme, address, and path.
 fn upstream_url(scheme: UpstreamScheme, addr: SocketAddr, path_and_query: &str) -> String {
     format!("{scheme}://{addr}{path_and_query}")
-}
-
-/// Retry tuning for upstream proxy requests.
-#[derive(Debug, Clone, Copy)]
-pub struct RetryConfig {
-    /// Number of retries after the initial attempt.
-    pub max_retries: u32,
-    /// Initial retry backoff.
-    pub initial_backoff: Duration,
-    /// Maximum retry backoff.
-    pub max_backoff: Duration,
-    /// Cooldown window after all attempts fail.
-    pub cooldown: Duration,
 }
 
 /// Forward a buffered request to `addr` and return a streaming [`Response`].
@@ -134,6 +121,15 @@ pub async fn forward(
 ///
 /// A retryable failure is either an upstream transport error or an HTTP 5xx
 /// status code. 4xx responses are returned immediately.
+///
+/// ## Design note: retry and trip responsibility
+///
+/// `forward_with_retry` owns both the retry orchestration and the
+/// [`crate::upstream::circuit_breaker::trip`] side-effect. This colocation
+/// keeps all retry state local and avoids a second pass through the result in
+/// the callsite. The `pool` parameter exists solely for the trip side-effect;
+/// it is not used for routing. Callers that need to distinguish "forwarding
+/// failed" from "upstream was tripped" can inspect the snapshot after the call.
 ///
 /// # Errors
 ///

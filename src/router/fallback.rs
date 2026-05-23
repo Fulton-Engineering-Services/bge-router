@@ -15,14 +15,26 @@
 //! Per-route fallback dispatch.
 //!
 //! Inference routes (`/v1/*embeddings*`) use a **hedged race**: GPU first;
-//! after `hedge_delay`, fire the CPU upstream in parallel; first non-5xx
+//! after `hedge_delay`, fire the secondary target in parallel; first non-5xx
 //! response wins; the loser's future is dropped, which cancels its in-flight
-//! `reqwest` call and closes the upstream connection so the GPU can stop
-//! computing the abandoned request.
+//! `reqwest` call and closes the upstream connection.
+//!
+//! **Secondary target selection for hedging:** when a second healthy GPU peer
+//! exists in the snapshot, it is raced instead of CPU — preserving GPU
+//! economics during partial GPU failures. CPU is used as the secondary only
+//! when no alternate GPU is available. When both GPU peers are healthy in the
+//! *snapshot* but both return runtime 5xx, the hedged race does not add CPU as
+//! a third leg; the caller receives the GPU outcome and the circuit breaker
+//! marks both GPUs for cooldown. CPU will be selected on the next request once
+//! both GPUs are excluded from routing. This is an intentional design decision
+//! documented here to avoid future confusion.
 //!
 //! Control-plane routes (`/health`, `/v1/models`, etc.) use a **sequential
 //! GPU→CPU fallback** with a hard timeout per upstream — fast failure
-//! detection matters more than masking GPU latency.
+//! detection matters more than masking GPU latency. At most `MAX_GPU_ATTEMPTS`
+//! GPU upstreams are tried before falling through to CPU; each attempt trims
+//! its backoff to fit inside the outer `control_timeout` budget so the circuit
+//! breaker always fires before the outer `tokio::time::timeout` can preempt it.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -40,6 +52,7 @@ use crate::error::AppError;
 use crate::headers::collect_x_headers;
 use crate::router::{policy, proxy, route_policy::RoutePolicy};
 use crate::state::AppState;
+use crate::upstream::circuit_breaker;
 use crate::upstream::snapshot::{PoolType, UpstreamScheme};
 
 #[cfg(test)]
@@ -441,6 +454,10 @@ async fn sequential_timeout(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
+    // Cap GPU attempts so a large GPU fleet cannot create O(N × control_timeout)
+    // latency before CPU. The per-attempt backoff trimming below ensures the
+    // retry loop completes (and trips the breaker) before the outer timeout fires.
+    const MAX_GPU_ATTEMPTS: usize = 2;
     let scheme = state.upstream_scheme();
 
     let mut tried_gpu_addrs = Vec::new();
@@ -450,12 +467,33 @@ async fn sequential_timeout(
     };
 
     while let Some((gpu_addr, _)) = gpu_candidate {
+        if tried_gpu_addrs.len() >= MAX_GPU_ATTEMPTS {
+            tracing::info!(
+                upstream = %gpu_addr,
+                max_gpu_attempts = MAX_GPU_ATTEMPTS,
+                "GPU attempt cap reached, falling back to CPU"
+            );
+            break;
+        }
+
+        // Bound each attempt to a fraction of the outer budget so the retry loop
+        // in forward_with_retry always has time to exhaust its retries (and trip
+        // the circuit breaker) before the outer timeout fires.  This prevents the
+        // silent feedback loop where a hung upstream is never tripped because the
+        // outer tokio::time::timeout cancels the future before trip() executes.
+        let retry_cfg = state.retry_config();
+        let attempts = u64::from(retry_cfg.max_retries) + 1;
+        let per_attempt_budget = per_upstream / u32::try_from(attempts).unwrap_or(1);
+        let mut attempt_cfg = retry_cfg;
+        attempt_cfg.initial_backoff = attempt_cfg.initial_backoff.min(per_attempt_budget / 2);
+        attempt_cfg.max_backoff = attempt_cfg.max_backoff.min(per_attempt_budget / 2);
+
         let result = tokio::time::timeout(
             per_upstream,
             proxy::forward_with_retry(
                 &state.client,
                 &state.pool,
-                state.retry_config(),
+                attempt_cfg,
                 scheme,
                 gpu_addr,
                 PoolType::Gpu,
@@ -473,21 +511,25 @@ async fn sequential_timeout(
                 tracing::warn!(
                     upstream = %gpu_addr,
                     status = resp.status().as_u16(),
-                    "GPU upstream returned 5xx, attempting CPU fallback"
+                    "GPU upstream returned 5xx, attempting next GPU or CPU fallback"
                 );
             }
             Ok(Err(e)) => {
                 tracing::warn!(
                     upstream = %gpu_addr,
                     err = %e,
-                    "GPU upstream error, attempting CPU fallback"
+                    "GPU upstream error, attempting next GPU or CPU fallback"
                 );
             }
             Err(_) => {
+                // Timeout preempted forward_with_retry before trip could fire.
+                // Trip the circuit breaker explicitly so subsequent requests skip
+                // this upstream without paying the full timeout again.
+                circuit_breaker::trip(&state.pool, gpu_addr, retry_cfg.cooldown);
                 tracing::warn!(
                     upstream = %gpu_addr,
                     budget_ms = ms(per_upstream),
-                    "GPU upstream timed out within fallback budget, attempting CPU fallback"
+                    "GPU upstream timed out; circuit breaker tripped"
                 );
             }
         }

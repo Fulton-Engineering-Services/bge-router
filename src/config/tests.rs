@@ -284,6 +284,26 @@ fn non_numeric_hedge_delay_is_rejected() {
 }
 
 #[test]
+fn cooldown_secs_zero_is_accepted() {
+    let cfg = from_map(&[("BGE_ROUTER_COOLDOWN_SECS", "0")]).unwrap();
+    assert_eq!(cfg.cooldown, Duration::ZERO);
+    let rc = cfg.retry_config();
+    assert_eq!(
+        rc.cooldown,
+        Duration::ZERO,
+        "retry_config must propagate zero cooldown"
+    );
+}
+
+#[test]
+fn retry_count_above_max_is_rejected() {
+    let err = from_map(&[("BGE_ROUTER_RETRY_COUNT", "21")]).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("BGE_ROUTER_RETRY_COUNT"), "{msg}");
+    assert!(msg.contains("exceeds maximum"), "{msg}");
+}
+
+#[test]
 fn zero_retry_initial_backoff_is_rejected() {
     let err = from_map(&[("BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS", "0")]).unwrap_err();
     let msg = format!("{err:#}");

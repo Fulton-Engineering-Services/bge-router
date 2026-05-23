@@ -116,6 +116,8 @@ The hedged race exists to eliminate the "GPU theater tax" on inference: when the
 
 Control-plane routes keep the existing short hard timeout: they are cheap and idempotent, and operators want fast failure detection rather than masked latency.
 
+**`/router/health` access control:** The `/router/health` endpoint exposes internal VPC IP addresses, queue depths, and circuit-breaker cooldown state for all discovered upstreams. This information constitutes an internal topology fingerprint and **must** be network-restricted. Ensure the ECS task security group and/or the ALB listener restrict access to `/router/health` to trusted VPC CIDRs or internal callers only. Never expose this endpoint on a public-facing ALB.
+
 **Per-upstream circuit breaker:** Every upstream forward attempt uses retry + exponential backoff. A transport error or HTTP 5xx is retried up to `BGE_ROUTER_RETRY_COUNT` times (`BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS` with exponential growth capped by `BGE_ROUTER_RETRY_MAX_BACKOFF_MS`). When retries are exhausted, the upstream enters cooldown for `BGE_ROUTER_COOLDOWN_SECS` and is excluded from `pick`/`pick_gpu`/`pick_cpu` until the cooldown expires. Cooldown state lives in `PoolSnapshot` and is preserved while the upstream address remains present in DNS.
 
 **Request body buffering:** The request body is buffered once (required for both the CPU race and the sequential-timeout retry). Response body is streamed without intermediate buffering. Once any bytes have been streamed to the client, retry is suppressed.

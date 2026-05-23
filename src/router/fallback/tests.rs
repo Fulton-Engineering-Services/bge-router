@@ -273,6 +273,41 @@ async fn hedge_delay_not_elapsed_means_cpu_is_never_fired() {
 }
 
 #[tokio::test]
+async fn hedged_race_gpu_5xx_cpu_wins() {
+    init_tracing();
+    // Core operational scenario: primary GPU returns 5xx on every attempt;
+    // CPU is healthy.  After the hedge delay fires, CPU should win the race.
+    let gpu = spawn_mock(500, Duration::from_millis(5)).await;
+    let cpu = spawn_mock(200, Duration::from_millis(5)).await;
+    let state = state_with(
+        Some(gpu.addr),
+        Some(cpu.addr),
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+    );
+
+    let resp = route(
+        &state,
+        Method::POST,
+        "/v1/embeddings",
+        HeaderMap::new(),
+        Bytes::from_static(b"{}"),
+    )
+    .await
+    .expect("CPU should win when GPU returns 5xx");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let pool_header = resp
+        .headers()
+        .get("x-bge-router-pool")
+        .map(|v| v.to_str().unwrap().to_owned());
+    assert_eq!(
+        pool_header.as_deref(),
+        Some("cpu"),
+        "CPU must win when GPU returns 5xx and hedge fires"
+    );
+}
+
+#[tokio::test]
 async fn hedged_race_both_fail_returns_gpu_error() {
     init_tracing();
     // Both upstreams return 500.  Hedged race should mark both as losers
