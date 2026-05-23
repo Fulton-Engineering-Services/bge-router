@@ -103,6 +103,9 @@ async fn hedged_race(
     let snapshot = state.pool.load_full();
     let gpu_candidate = policy::pick_gpu(&snapshot);
     let cpu_candidate = policy::pick_cpu(&snapshot);
+    let secondary_candidate = gpu_candidate
+        .and_then(|(gpu_addr, _)| policy::pick_gpu_excluding_set(&snapshot, &[gpu_addr]))
+        .or(cpu_candidate);
 
     // Collect X-* headers once; serialize to JSON for log events (None when empty).
     let x_headers = collect_x_headers(&headers);
@@ -120,16 +123,16 @@ async fn hedged_race(
         body,
     };
 
-    match (gpu_candidate, cpu_candidate) {
+    match (gpu_candidate, secondary_candidate) {
         (None, None) => Err(AppError::NoUpstreamAvailable),
-        // No GPU — go straight to CPU with no hedge.
-        (None, Some((cpu_addr, _))) => {
-            let result = forward(state, cpu_addr, PoolType::Cpu, &ctx).await;
+        // No GPU — go straight to the secondary target (CPU in this branch).
+        (None, Some((secondary_addr, secondary_pool))) => {
+            let result = forward(state, secondary_addr, secondary_pool, &ctx).await;
             if let Ok(ref resp) = result {
                 log_direct(
                     path_and_query,
-                    cpu_addr,
-                    "cpu",
+                    secondary_addr,
+                    secondary_pool.as_str(),
                     resp.status().as_u16(),
                     x_headers_json.as_deref(),
                 );
@@ -150,12 +153,13 @@ async fn hedged_race(
             }
             result
         }
-        (Some((gpu_addr, _)), Some((cpu_addr, _))) => {
+        (Some((gpu_addr, _)), Some((secondary_addr, secondary_pool))) => {
             run_race(
                 state,
                 hedge_delay,
                 gpu_addr,
-                cpu_addr,
+                secondary_addr,
+                secondary_pool,
                 &ctx,
                 x_headers_json.as_deref(),
             )
@@ -189,43 +193,46 @@ async fn run_race(
     state: &AppState,
     hedge_delay: Duration,
     gpu_addr: SocketAddr,
-    cpu_addr: SocketAddr,
+    secondary_addr: SocketAddr,
+    secondary_pool: PoolType,
     ctx: &ForwardCtx<'_>,
     x_headers_json: Option<&str>,
 ) -> Result<Response, AppError> {
     let start = Instant::now();
-    let cpu_started = Arc::new(AtomicBool::new(false));
+    let secondary_started = Arc::new(AtomicBool::new(false));
 
     let gpu_fut = forward(state, gpu_addr, PoolType::Gpu, ctx);
 
     // CPU fires only after hedge_delay.  Capture by reference; the async
     // block lives no longer than this stack frame.
-    let cpu_started_ref = cpu_started.clone();
-    let cpu_fut = async move {
+    let secondary_started_ref = secondary_started.clone();
+    let secondary_fut = async move {
         tokio::time::sleep(hedge_delay).await;
-        cpu_started_ref.store(true, Ordering::SeqCst);
+        secondary_started_ref.store(true, Ordering::SeqCst);
         tracing::info!(
             target: "bge_router::router::hedge",
             path = %ctx.path_and_query,
             hedge_delay_ms = ms(hedge_delay),
-            gpu_upstream = %gpu_addr,
-            cpu_upstream = %cpu_addr,
-            "hedge: firing CPU race"
+            primary_gpu_upstream = %gpu_addr,
+            secondary_upstream = %secondary_addr,
+            secondary_pool = secondary_pool.as_str(),
+            "hedge: firing secondary race"
         );
-        forward(state, cpu_addr, PoolType::Cpu, ctx).await
+        forward(state, secondary_addr, secondary_pool, ctx).await
     };
 
     tokio::pin!(gpu_fut);
-    tokio::pin!(cpu_fut);
+    tokio::pin!(secondary_fut);
 
     select_winner(
         &mut gpu_fut,
-        &mut cpu_fut,
-        &cpu_started,
+        &mut secondary_fut,
+        &secondary_started,
         start,
         ctx.path_and_query,
         gpu_addr,
-        cpu_addr,
+        secondary_addr,
+        secondary_pool,
         x_headers_json,
     )
     .await
@@ -236,20 +243,21 @@ async fn run_race(
 #[allow(clippy::too_many_arguments)]
 async fn select_winner(
     gpu_fut: &mut std::pin::Pin<&mut impl Future<Output = Result<Response, AppError>>>,
-    cpu_fut: &mut std::pin::Pin<&mut impl Future<Output = Result<Response, AppError>>>,
-    cpu_started: &AtomicBool,
+    secondary_fut: &mut std::pin::Pin<&mut impl Future<Output = Result<Response, AppError>>>,
+    secondary_started: &AtomicBool,
     start: Instant,
     path_and_query: &str,
     gpu_addr: SocketAddr,
-    cpu_addr: SocketAddr,
+    secondary_addr: SocketAddr,
+    secondary_pool: PoolType,
     x_headers_json: Option<&str>,
 ) -> Result<Response, AppError> {
     let mut gpu_done = false;
-    let mut cpu_done = false;
+    let mut secondary_done = false;
     let mut gpu_failure: Option<Result<Response, AppError>> = None;
-    let mut cpu_failure: Option<Result<Response, AppError>> = None;
+    let mut secondary_failure: Option<Result<Response, AppError>> = None;
 
-    while !(gpu_done && cpu_done) {
+    while !(gpu_done && secondary_done) {
         tokio::select! {
             // Bias toward GPU so a successful GPU return polled in the same
             // tick as a CPU completion is preferred (preserves GPU-primary
@@ -258,28 +266,46 @@ async fn select_winner(
             result = &mut *gpu_fut, if !gpu_done => {
                 gpu_done = true;
                 if is_winner(&result) {
-                    let loser_status = if cpu_done {
+                    let loser_status = if secondary_done {
                         "errored"
-                    } else if cpu_started.load(Ordering::SeqCst) {
+                    } else if secondary_started.load(Ordering::SeqCst) {
                         "cancelled"
                     } else {
                         "not_started"
                     };
-                    log_winner("GPU", path_and_query, start.elapsed(), gpu_addr, cpu_addr, loser_status, x_headers_json);
+                    log_winner(
+                        "primary_gpu",
+                        path_and_query,
+                        start.elapsed(),
+                        gpu_addr,
+                        secondary_addr,
+                        secondary_pool,
+                        loser_status,
+                        x_headers_json,
+                    );
                     return result;
                 }
                 log_loser_attempt("GPU", gpu_addr, &result, start.elapsed());
                 gpu_failure = Some(result);
             }
-            result = &mut *cpu_fut, if !cpu_done => {
-                cpu_done = true;
+            result = &mut *secondary_fut, if !secondary_done => {
+                secondary_done = true;
                 if is_winner(&result) {
                     let loser_status = if gpu_done { "errored" } else { "cancelled" };
-                    log_winner("CPU", path_and_query, start.elapsed(), gpu_addr, cpu_addr, loser_status, x_headers_json);
+                    log_winner(
+                        "secondary",
+                        path_and_query,
+                        start.elapsed(),
+                        gpu_addr,
+                        secondary_addr,
+                        secondary_pool,
+                        loser_status,
+                        x_headers_json,
+                    );
                     return result;
                 }
-                log_loser_attempt("CPU", cpu_addr, &result, start.elapsed());
-                cpu_failure = Some(result);
+                log_loser_attempt(secondary_pool.as_str(), secondary_addr, &result, start.elapsed());
+                secondary_failure = Some(result);
             }
         }
     }
@@ -290,21 +316,24 @@ async fn select_winner(
     tracing::warn!(
         target: "bge_router::router::hedge",
         path = %path_and_query,
-        gpu_upstream = %gpu_addr,
-        cpu_upstream = %cpu_addr,
+        primary_gpu_upstream = %gpu_addr,
+        secondary_upstream = %secondary_addr,
+        secondary_pool = secondary_pool.as_str(),
         "hedge: both failed"
     );
     gpu_failure
-        .or(cpu_failure)
+        .or(secondary_failure)
         .unwrap_or(Err(AppError::NoUpstreamAvailable))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn log_winner(
     pool: &str,
     path_and_query: &str,
     elapsed: Duration,
     gpu_addr: SocketAddr,
-    cpu_addr: SocketAddr,
+    secondary_addr: SocketAddr,
+    secondary_pool: PoolType,
     loser_status: &'static str,
     x_headers_json: Option<&str>,
 ) {
@@ -313,8 +342,9 @@ fn log_winner(
             target: "bge_router::router::hedge",
             path = %path_and_query,
             winner_latency_ms = ms(elapsed),
-            gpu_upstream = %gpu_addr,
-            cpu_upstream = %cpu_addr,
+            primary_gpu_upstream = %gpu_addr,
+            secondary_upstream = %secondary_addr,
+            secondary_pool = secondary_pool.as_str(),
             loser_status = loser_status,
             x_headers = xh,
             "hedge: {pool} won"
@@ -324,8 +354,9 @@ fn log_winner(
             target: "bge_router::router::hedge",
             path = %path_and_query,
             winner_latency_ms = ms(elapsed),
-            gpu_upstream = %gpu_addr,
-            cpu_upstream = %cpu_addr,
+            primary_gpu_upstream = %gpu_addr,
+            secondary_upstream = %secondary_addr,
+            secondary_pool = secondary_pool.as_str(),
             loser_status = loser_status,
             "hedge: {pool} won"
         );
@@ -410,12 +441,15 @@ async fn sequential_timeout(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
-    let snapshot = state.pool.load_full();
-    let gpu_candidate = policy::pick_gpu(&snapshot);
-    let cpu_candidate = policy::pick_cpu(&snapshot);
     let scheme = state.upstream_scheme();
 
-    if let Some((gpu_addr, _)) = gpu_candidate {
+    let mut tried_gpu_addrs = Vec::new();
+    let mut gpu_candidate = {
+        let snapshot = state.pool.load_full();
+        policy::pick_gpu(&snapshot)
+    };
+
+    while let Some((gpu_addr, _)) = gpu_candidate {
         let result = tokio::time::timeout(
             per_upstream,
             proxy::forward_with_retry(
@@ -458,19 +492,15 @@ async fn sequential_timeout(
             }
         }
 
-        if let Some((cpu_addr, _)) = cpu_candidate {
-            return forward_cpu_with_timeout(
-                state,
-                per_upstream,
-                cpu_addr,
-                &method,
-                path_and_query,
-                &headers,
-                body,
-            )
-            .await;
-        }
-    } else if let Some((cpu_addr, _)) = cpu_candidate {
+        tried_gpu_addrs.push(gpu_addr);
+        gpu_candidate = {
+            let snapshot = state.pool.load_full();
+            policy::pick_gpu_excluding_set(&snapshot, &tried_gpu_addrs)
+        };
+    }
+
+    let snapshot = state.pool.load_full();
+    if let Some((cpu_addr, _)) = policy::pick_cpu(&snapshot) {
         return forward_cpu_with_timeout(
             state,
             per_upstream,

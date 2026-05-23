@@ -55,6 +55,49 @@ pub fn pick_gpu(snapshot: &PoolSnapshot) -> Option<(SocketAddr, PoolType)> {
         .or_else(|| pick_loading(&snapshot.gpu, PoolType::Gpu, now))
 }
 
+/// Pick the best GPU upstream excluding one specific address.
+#[must_use]
+pub fn pick_gpu_excluding(
+    snapshot: &PoolSnapshot,
+    excluded_addr: SocketAddr,
+) -> Option<(SocketAddr, PoolType)> {
+    let now = Instant::now();
+    pick_ok_excluding(&snapshot.gpu, PoolType::Gpu, now, excluded_addr)
+        .or_else(|| pick_loading_excluding(&snapshot.gpu, PoolType::Gpu, now, excluded_addr))
+}
+
+/// Pick the best GPU upstream excluding a set of addresses.
+#[must_use]
+pub fn pick_gpu_excluding_set(
+    snapshot: &PoolSnapshot,
+    excluded_addrs: &[SocketAddr],
+) -> Option<(SocketAddr, PoolType)> {
+    let now = Instant::now();
+    snapshot
+        .gpu
+        .iter()
+        .filter(|u| {
+            !excluded_addrs.contains(&u.addr)
+                && u.status == UpstreamStatus::Ok
+                && !u.is_in_cooldown(now)
+        })
+        .min_by_key(|u| u.queue_depth)
+        .map(|u| (u.addr, PoolType::Gpu))
+        .or_else(|| {
+            snapshot
+                .gpu
+                .iter()
+                .filter(|u| {
+                    !excluded_addrs.contains(&u.addr)
+                        && u.status == UpstreamStatus::Loading
+                        && u.live_workers > 0
+                        && !u.is_in_cooldown(now)
+                })
+                .min_by_key(|u| u.queue_depth)
+                .map(|u| (u.addr, PoolType::Gpu))
+        })
+}
+
 /// Pick the best CPU upstream, or `None` if no routable CPU is available.
 #[must_use]
 pub fn pick_cpu(snapshot: &PoolSnapshot) -> Option<(SocketAddr, PoolType)> {
@@ -74,6 +117,20 @@ fn pick_ok(
         .map(|u| (u.addr, pool_type))
 }
 
+fn pick_ok_excluding(
+    pool: &[UpstreamInfo],
+    pool_type: PoolType,
+    now: Instant,
+    excluded_addr: SocketAddr,
+) -> Option<(SocketAddr, PoolType)> {
+    pool.iter()
+        .filter(|u| {
+            u.addr != excluded_addr && u.status == UpstreamStatus::Ok && !u.is_in_cooldown(now)
+        })
+        .min_by_key(|u| u.queue_depth)
+        .map(|u| (u.addr, pool_type))
+}
+
 /// Pick the least-loaded `Loading` upstream that has live workers.
 ///
 /// `live_workers > 0` means the upstream process is running and will accept
@@ -87,6 +144,23 @@ fn pick_loading(
     pool.iter()
         .filter(|u| {
             u.status == UpstreamStatus::Loading && u.live_workers > 0 && !u.is_in_cooldown(now)
+        })
+        .min_by_key(|u| u.queue_depth)
+        .map(|u| (u.addr, pool_type))
+}
+
+fn pick_loading_excluding(
+    pool: &[UpstreamInfo],
+    pool_type: PoolType,
+    now: Instant,
+    excluded_addr: SocketAddr,
+) -> Option<(SocketAddr, PoolType)> {
+    pool.iter()
+        .filter(|u| {
+            u.addr != excluded_addr
+                && u.status == UpstreamStatus::Loading
+                && u.live_workers > 0
+                && !u.is_in_cooldown(now)
         })
         .min_by_key(|u| u.queue_depth)
         .map(|u| (u.addr, pool_type))

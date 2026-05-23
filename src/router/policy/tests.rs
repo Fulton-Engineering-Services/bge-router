@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use crate::upstream::snapshot::{PoolSnapshot, PoolType, UpstreamInfo, UpstreamStatus};
 
-use super::{pick, pick_cpu, pick_gpu};
+use super::{pick, pick_cpu, pick_gpu, pick_gpu_excluding_set};
 
 fn make_upstream(
     addr: &str,
@@ -308,6 +308,16 @@ fn pick_cpu_ignores_gpu_pool() {
         pick_cpu(&snap).is_none(),
         "pick_cpu should not look at gpu pool"
     );
+}
+
+#[test]
+fn pick_gpu_excluding_set_skips_all_excluded() {
+    let gpu_a = make_upstream("10.0.0.1:8081", PoolType::Gpu, UpstreamStatus::Ok, 0);
+    let gpu_b = make_upstream("10.0.0.2:8081", PoolType::Gpu, UpstreamStatus::Ok, 1);
+    let snap = snapshot(vec![gpu_a, gpu_b], vec![]);
+    let excluded = vec!["10.0.0.1:8081".parse::<SocketAddr>().unwrap()];
+    let picked = pick_gpu_excluding_set(&snap, &excluded).expect("gpu_b should be selected");
+    assert_eq!(picked.0, "10.0.0.2:8081".parse::<SocketAddr>().unwrap());
 }
 
 #[test]

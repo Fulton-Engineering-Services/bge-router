@@ -318,6 +318,59 @@ async fn hedged_race_both_fail_returns_gpu_error() {
     );
 }
 
+#[tokio::test]
+async fn inference_prefers_second_gpu_before_cpu() {
+    // gpu_a fails repeatedly; gpu_b is healthy; cpu is healthy.
+    // Hedged inference should race gpu_b as the secondary target before cpu.
+    let gpu_a = spawn_mock(500, Duration::from_millis(5)).await;
+    let gpu_b = spawn_mock(200, Duration::from_millis(5)).await;
+    let cpu = spawn_mock(200, Duration::from_millis(5)).await;
+    let state = AppState::new(config_with(
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+    ))
+    .expect("test state must build");
+    let snapshot = PoolSnapshot {
+        gpu: vec![
+            ok_upstream(gpu_a.addr, PoolType::Gpu),
+            ok_upstream(gpu_b.addr, PoolType::Gpu),
+        ],
+        cpu: vec![ok_upstream(cpu.addr, PoolType::Cpu)],
+        updated_at: Instant::now(),
+    };
+    state.pool.store(Arc::new(snapshot));
+
+    let resp = route(
+        &state,
+        Method::POST,
+        "/v1/embeddings",
+        HeaderMap::new(),
+        Bytes::from_static(b"{}"),
+    )
+    .await
+    .expect("healthy second gpu should win");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let pool_header = resp
+        .headers()
+        .get("x-bge-router-pool")
+        .map(|v| v.to_str().unwrap().to_owned());
+    let upstream_header = resp
+        .headers()
+        .get("x-bge-router-upstream")
+        .map(|v| v.to_str().unwrap().to_owned());
+    assert_eq!(pool_header.as_deref(), Some("gpu"));
+    assert_eq!(
+        upstream_header.as_deref(),
+        Some(gpu_b.addr.to_string().as_str())
+    );
+    assert_eq!(
+        cpu.received.load(Ordering::SeqCst),
+        0,
+        "cpu should not be used while a second gpu is healthy"
+    );
+}
+
 // ── Sequential timeout (control-plane paths) ────────────────────────────────
 
 #[tokio::test]
@@ -361,6 +414,57 @@ async fn control_plane_uses_per_upstream_timeout_and_falls_back_to_cpu() {
         .get("x-bge-router-pool")
         .map(|v| v.to_str().unwrap().to_owned());
     assert_eq!(pool_header.as_deref(), Some("cpu"));
+}
+
+#[tokio::test]
+async fn control_plane_prefers_second_gpu_before_cpu() {
+    // gpu_a fails and is tripped; gpu_b is healthy; cpu is healthy.
+    // Router should select gpu_b before attempting cpu fallback.
+    let gpu_a = spawn_mock(500, Duration::from_millis(5)).await;
+    let gpu_b = spawn_mock(200, Duration::from_millis(5)).await;
+    let cpu = spawn_mock(200, Duration::from_millis(5)).await;
+
+    let state = AppState::new(config_with(Duration::from_secs(1), Duration::from_secs(1)))
+        .expect("test state must build");
+    let snapshot = PoolSnapshot {
+        gpu: vec![
+            ok_upstream(gpu_a.addr, PoolType::Gpu),
+            ok_upstream(gpu_b.addr, PoolType::Gpu),
+        ],
+        cpu: vec![ok_upstream(cpu.addr, PoolType::Cpu)],
+        updated_at: Instant::now(),
+    };
+    state.pool.store(Arc::new(snapshot));
+
+    let resp = route(
+        &state,
+        Method::GET,
+        "/health",
+        HeaderMap::new(),
+        Bytes::new(),
+    )
+    .await
+    .expect("second healthy gpu should serve");
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let pool_header = resp
+        .headers()
+        .get("x-bge-router-pool")
+        .map(|v| v.to_str().unwrap().to_owned());
+    let upstream_header = resp
+        .headers()
+        .get("x-bge-router-upstream")
+        .map(|v| v.to_str().unwrap().to_owned());
+    assert_eq!(pool_header.as_deref(), Some("gpu"));
+    assert_eq!(
+        upstream_header.as_deref(),
+        Some(gpu_b.addr.to_string().as_str())
+    );
+    assert_eq!(
+        cpu.received.load(Ordering::SeqCst),
+        0,
+        "cpu should not be used while another gpu is healthy"
+    );
 }
 
 #[tokio::test]
