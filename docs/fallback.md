@@ -48,6 +48,20 @@ CPU upstream  │                          │───────────�
    outcome (preserves prior sequential semantics so existing observability
    does not regress).
 
+### Circuit breaker and retries
+
+Every upstream call runs through `proxy::forward_with_retry`:
+
+- Attempt 1 + `BGE_ROUTER_RETRY_COUNT` retries (default `3`, so 4 total tries).
+- Retry conditions: transport error (`reqwest::Error`) or HTTP `5xx`.
+- Backoff: exponential from `BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS` (default `100`)
+  and capped by `BGE_ROUTER_RETRY_MAX_BACKOFF_MS` (default `1000`).
+- When all attempts fail, the upstream enters cooldown for
+  `BGE_ROUTER_COOLDOWN_SECS` (default `30`) and is excluded from routing until
+  the cooldown expires.
+- Cooldown is tracked per upstream address in the snapshot. DNS removal still
+  removes the upstream immediately regardless of cooldown.
+
 ### Logged events (target: `bge_router::router::hedge`)
 
 | Event | Level | Fields | Emitted when |
@@ -103,10 +117,10 @@ keeps the existing GPU → CPU sequential structure but bounds each upstream
 independently:
 
 ```
-1. proxy::forward(GPU)  wrapped in tokio::time::timeout(per_upstream)
+1. proxy::forward_with_retry(GPU) wrapped in tokio::time::timeout(per_upstream)
 2. If GPU OK and not 5xx → return
 3. If GPU times out / errors / returns 5xx
-   → proxy::forward(CPU) wrapped in tokio::time::timeout(per_upstream)
+   → proxy::forward_with_retry(CPU) wrapped in tokio::time::timeout(per_upstream)
 4. If CPU also fails or times out → 503
 ```
 
@@ -143,6 +157,10 @@ TLS setup guide.
 |----------|---------|-------------|
 | `BGE_ROUTER_HEDGE_DELAY_MS` | `5000` | Inference: ms to wait before firing parallel CPU race |
 | `BGE_ROUTER_CONTROL_TIMEOUT_MS` | `1000` | Control plane: per-upstream hard timeout |
+| `BGE_ROUTER_RETRY_COUNT` | `3` | Retries after the initial upstream attempt (total attempts = `1 + retry_count`) |
+| `BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS` | `100` | Initial backoff before the first retry |
+| `BGE_ROUTER_RETRY_MAX_BACKOFF_MS` | `1000` | Maximum exponential backoff cap |
+| `BGE_ROUTER_COOLDOWN_SECS` | `30` | Cooldown duration after retry exhaustion; set `0` to disable tripping |
 | `BGE_ROUTER_FALLBACK_BUDGET_MS` | _unset_ | **Deprecated.** When set without `BGE_ROUTER_HEDGE_DELAY_MS`, seeds `hedge_delay` for safer migration. Never seeds `control_timeout`. Logged as a one-time `WARN` at startup. |
 
 Both `*_MS` variables must be `> 0` if explicitly set; the server fails fast

@@ -85,6 +85,7 @@ struct UpstreamView {
     queue_depth: u32,
     live_workers: u32,
     last_seen_secs_ago: f64,
+    cooldown_remaining_secs: Option<f64>,
 }
 
 impl UpstreamView {
@@ -104,6 +105,10 @@ impl UpstreamView {
             queue_depth: info.queue_depth,
             live_workers: info.live_workers,
             last_seen_secs_ago: now.duration_since(info.last_seen).as_secs_f64(),
+            cooldown_remaining_secs: info
+                .cooldown_until
+                .map(|t| t.saturating_duration_since(now).as_secs_f64())
+                .filter(|s| *s > 0.0),
         }
     }
 }
@@ -132,6 +137,10 @@ mod tests {
             health_poll: Duration::from_secs(5),
             hedge_delay: Duration::from_secs(5),
             control_timeout: Duration::from_secs(1),
+            retry_count: 3,
+            retry_initial_backoff: Duration::from_millis(100),
+            retry_max_backoff: Duration::from_secs(1),
+            cooldown: Duration::from_secs(30),
             legacy_fallback_budget_set: false,
             heartbeat: Duration::from_mins(1),
             tls_cert_path: None,
@@ -149,6 +158,7 @@ mod tests {
             queue_depth: 0,
             live_workers: 8,
             last_seen: Instant::now(),
+            cooldown_until: None,
         }
     }
 
@@ -198,6 +208,7 @@ mod tests {
                 queue_depth: 0,
                 live_workers: 8,
                 last_seen: std::time::Instant::now(),
+                cooldown_until: None,
             }],
             updated_at: std::time::Instant::now(),
         };
@@ -278,6 +289,77 @@ mod tests {
         assert!(
             body.get("cpu_upstreams").is_some(),
             "body must contain 'cpu_upstreams'"
+        );
+    }
+
+    #[tokio::test]
+    async fn cooled_down_upstream_shows_cooldown_remaining_secs() {
+        let state = AppState::new(test_config()).expect("test state must build");
+        let snapshot = PoolSnapshot {
+            gpu: vec![UpstreamInfo {
+                addr: "10.0.0.1:8081".parse::<SocketAddr>().unwrap(),
+                pool_type: PoolType::Gpu,
+                status: UpstreamStatus::Ok,
+                queue_depth: 0,
+                live_workers: 1,
+                last_seen: Instant::now(),
+                cooldown_until: Some(Instant::now() + Duration::from_secs(10)),
+            }],
+            cpu: vec![],
+            updated_at: Instant::now(),
+        };
+        state.pool.store(Arc::new(snapshot));
+
+        let app = crate::bootstrap::router::build(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/router/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let gpu = &body["gpu_upstreams"][0];
+        let remaining = gpu["cooldown_remaining_secs"]
+            .as_f64()
+            .expect("cooldown_remaining_secs must be a number when upstream is in cooldown");
+        assert!(
+            remaining > 0.0 && remaining <= 10.0,
+            "cooldown_remaining_secs should be within (0, 10]: {remaining}"
+        );
+    }
+
+    #[tokio::test]
+    async fn upstream_not_in_cooldown_has_null_cooldown_remaining_secs() {
+        let state = AppState::new(test_config()).expect("test state must build");
+        let snapshot = PoolSnapshot {
+            gpu: vec![ok_gpu_upstream("10.0.0.1:8081")],
+            cpu: vec![],
+            updated_at: Instant::now(),
+        };
+        state.pool.store(Arc::new(snapshot));
+
+        let app = crate::bootstrap::router::build(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/router/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            body["gpu_upstreams"][0]["cooldown_remaining_secs"].is_null(),
+            "upstream not in cooldown must have null cooldown_remaining_secs"
         );
     }
 }

@@ -160,6 +160,7 @@ fn update_pool(pool: &[UpstreamInfo], results: &[PollResult], now: Instant) -> V
                     queue_depth: r.queue_depth,
                     live_workers: r.live_workers,
                     last_seen: now,
+                    cooldown_until: upstream.cooldown_until,
                 }
             } else {
                 upstream.clone()
@@ -197,6 +198,7 @@ mod tests {
             queue_depth: 0,
             live_workers: 0,
             last_seen: Instant::now(),
+            cooldown_until: None,
         }
     }
 
@@ -278,8 +280,10 @@ mod tests {
     #[test]
     fn apply_updates_matching_result_overwrites_status_and_depth() {
         let addr: SocketAddr = "10.0.0.1:8081".parse().unwrap();
+        let mut upstream = unknown_gpu(addr);
+        upstream.cooldown_until = Some(Instant::now() + std::time::Duration::from_secs(5));
         let current = PoolSnapshot {
-            gpu: vec![unknown_gpu(addr)],
+            gpu: vec![upstream],
             cpu: vec![],
             updated_at: Instant::now(),
         };
@@ -294,6 +298,10 @@ mod tests {
         assert_eq!(updated.gpu[0].status, UpstreamStatus::Ok);
         assert_eq!(updated.gpu[0].queue_depth, 7);
         assert_eq!(updated.gpu[0].live_workers, 4);
+        assert!(
+            updated.gpu[0].cooldown_until.is_some(),
+            "health polling should preserve cooldown state"
+        );
     }
 
     #[test]

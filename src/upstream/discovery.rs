@@ -216,6 +216,7 @@ fn merge_pool(
                         queue_depth: 0,
                         live_workers: 0,
                         last_seen: Instant::now(),
+                        cooldown_until: None,
                     })
             })
             .collect(),
@@ -297,6 +298,7 @@ mod tests {
             queue_depth,
             live_workers: 4,
             last_seen: Instant::now(),
+            cooldown_until: None,
         }
     }
 
@@ -337,7 +339,9 @@ mod tests {
 
     #[test]
     fn merge_pool_resolved_preserves_health_for_existing_addresses() {
-        let existing = vec![upstream("10.0.0.1:8081", UpstreamStatus::Ok, 5)];
+        let mut existing_upstream = upstream("10.0.0.1:8081", UpstreamStatus::Ok, 5);
+        existing_upstream.cooldown_until = Some(Instant::now() + Duration::from_secs(10));
+        let existing = vec![existing_upstream];
         let result = merge_pool(
             &existing,
             &ResolveResult::Resolved(vec![addr("10.0.0.1:8081")]),
@@ -346,6 +350,7 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].status, UpstreamStatus::Ok);
         assert_eq!(result[0].queue_depth, 5);
+        assert!(result[0].cooldown_until.is_some());
     }
 
     #[test]

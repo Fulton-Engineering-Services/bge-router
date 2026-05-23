@@ -76,6 +76,29 @@ fn default_control_timeout_is_1000ms() {
 }
 
 #[test]
+fn default_retry_count_is_three() {
+    assert_eq!(empty_lookup().retry_count, 3);
+}
+
+#[test]
+fn default_retry_initial_backoff_is_100ms() {
+    assert_eq!(
+        empty_lookup().retry_initial_backoff,
+        Duration::from_millis(100)
+    );
+}
+
+#[test]
+fn default_retry_max_backoff_is_1000ms() {
+    assert_eq!(empty_lookup().retry_max_backoff, Duration::from_secs(1));
+}
+
+#[test]
+fn default_cooldown_is_30s() {
+    assert_eq!(empty_lookup().cooldown, Duration::from_secs(30));
+}
+
+#[test]
 fn default_heartbeat_is_60s() {
     assert_eq!(empty_lookup().heartbeat, Duration::from_mins(1));
 }
@@ -98,6 +121,21 @@ fn explicit_hedge_delay_overrides_default() {
 fn explicit_control_timeout_overrides_default() {
     let cfg = from_map(&[("BGE_ROUTER_CONTROL_TIMEOUT_MS", "300")]).unwrap();
     assert_eq!(cfg.control_timeout, Duration::from_millis(300));
+}
+
+#[test]
+fn explicit_retry_settings_override_defaults() {
+    let cfg = from_map(&[
+        ("BGE_ROUTER_RETRY_COUNT", "5"),
+        ("BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS", "50"),
+        ("BGE_ROUTER_RETRY_MAX_BACKOFF_MS", "500"),
+        ("BGE_ROUTER_COOLDOWN_SECS", "45"),
+    ])
+    .unwrap();
+    assert_eq!(cfg.retry_count, 5);
+    assert_eq!(cfg.retry_initial_backoff, Duration::from_millis(50));
+    assert_eq!(cfg.retry_max_backoff, Duration::from_millis(500));
+    assert_eq!(cfg.cooldown, Duration::from_secs(45));
 }
 
 // ── back-compat: legacy BGE_ROUTER_FALLBACK_BUDGET_MS ──────────────────────
@@ -243,4 +281,42 @@ fn non_numeric_hedge_delay_is_rejected() {
     let err = from_map(&[("BGE_ROUTER_HEDGE_DELAY_MS", "abc")]).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("BGE_ROUTER_HEDGE_DELAY_MS"), "{msg}");
+}
+
+#[test]
+fn cooldown_secs_zero_is_accepted() {
+    let cfg = from_map(&[("BGE_ROUTER_COOLDOWN_SECS", "0")]).unwrap();
+    assert_eq!(cfg.cooldown, Duration::ZERO);
+    let rc = cfg.retry_config();
+    assert_eq!(
+        rc.cooldown,
+        Duration::ZERO,
+        "retry_config must propagate zero cooldown"
+    );
+}
+
+#[test]
+fn retry_count_above_max_is_rejected() {
+    let err = from_map(&[("BGE_ROUTER_RETRY_COUNT", "21")]).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("BGE_ROUTER_RETRY_COUNT"), "{msg}");
+    assert!(msg.contains("exceeds maximum"), "{msg}");
+}
+
+#[test]
+fn zero_retry_initial_backoff_is_rejected() {
+    let err = from_map(&[("BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS", "0")]).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS"), "{msg}");
+}
+
+#[test]
+fn retry_max_backoff_less_than_initial_is_rejected() {
+    let err = from_map(&[
+        ("BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS", "500"),
+        ("BGE_ROUTER_RETRY_MAX_BACKOFF_MS", "100"),
+    ])
+    .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("BGE_ROUTER_RETRY_MAX_BACKOFF_MS"), "{msg}");
 }

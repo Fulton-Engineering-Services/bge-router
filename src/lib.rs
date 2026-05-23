@@ -71,6 +71,9 @@ pub async fn run() -> Result<()> {
     let cfg = config::Config::from_env()?;
     let hedge_delay_ms = u64::try_from(cfg.hedge_delay.as_millis()).unwrap_or(u64::MAX);
     let control_timeout_ms = u64::try_from(cfg.control_timeout.as_millis()).unwrap_or(u64::MAX);
+    let retry_initial_backoff_ms =
+        u64::try_from(cfg.retry_initial_backoff.as_millis()).unwrap_or(u64::MAX);
+    let retry_max_backoff_ms = u64::try_from(cfg.retry_max_backoff.as_millis()).unwrap_or(u64::MAX);
     tracing::info!(
         bind = %cfg.bind,
         gpu_dns = %cfg.gpu_dns,
@@ -79,6 +82,10 @@ pub async fn run() -> Result<()> {
         health_poll_secs = cfg.health_poll.as_secs(),
         hedge_delay_ms = hedge_delay_ms,
         control_timeout_ms = control_timeout_ms,
+        retry_count = cfg.retry_count,
+        retry_initial_backoff_ms = retry_initial_backoff_ms,
+        retry_max_backoff_ms = retry_max_backoff_ms,
+        cooldown_secs = cfg.cooldown.as_secs(),
         "bge-router starting"
     );
 
