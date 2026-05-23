@@ -73,6 +73,10 @@ HTTP 503 when all pools are empty or unhealthy.
 | `BGE_ROUTER_HEALTH_POLL_SECS` | `5` | How often to poll each upstream's `/health` |
 | `BGE_ROUTER_HEDGE_DELAY_MS` | `5000` | Inference paths only: ms to wait before firing the parallel CPU race against the GPU |
 | `BGE_ROUTER_CONTROL_TIMEOUT_MS` | `1000` | Control-plane paths (`/health`, `/v1/models`, etc.): per-upstream hard timeout |
+| `BGE_ROUTER_RETRY_COUNT` | `3` | Retries after the initial upstream attempt for a selected upstream (total attempts `1 + retry_count`) |
+| `BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS` | `100` | Initial retry backoff delay in milliseconds |
+| `BGE_ROUTER_RETRY_MAX_BACKOFF_MS` | `1000` | Maximum cap for exponential retry backoff |
+| `BGE_ROUTER_COOLDOWN_SECS` | `30` | Cooldown duration after retries are exhausted; while cooling down, the upstream is excluded from routing. Set `0` to disable tripping while keeping retries. |
 | `BGE_ROUTER_FALLBACK_BUDGET_MS` | _unset_ | **Deprecated.** When set without `BGE_ROUTER_HEDGE_DELAY_MS`, seeds `hedge_delay`; never seeds `control_timeout`. A WARN is logged at startup. Remove once new vars are deployed. |
 | `BGE_ROUTER_HEARTBEAT_SECS` | `60` | Heartbeat log interval (`0` = disable) |
 | `BGE_ROUTER_LOG_FORMAT` | auto | `json` (non-TTY default), `text`, `pretty` |
@@ -111,6 +115,8 @@ HTTP 503 when all pools are empty or unhealthy.
 The hedged race exists to eliminate the "GPU theater tax" on inference: when the GPU is doing real work (or its TRT engine is cold-starting on a previously-unseen shape, which can take 50–356 s), CPU starts racing after the hedge delay rather than after a hard cancel. The loser is cancelled at the source — dropping the future closes the TCP connection so the upstream worker stops, freeing GPU-seconds and queue capacity.
 
 Control-plane routes keep the existing short hard timeout: they are cheap and idempotent, and operators want fast failure detection rather than masked latency.
+
+**Per-upstream circuit breaker:** Every upstream forward attempt uses retry + exponential backoff. A transport error or HTTP 5xx is retried up to `BGE_ROUTER_RETRY_COUNT` times (`BGE_ROUTER_RETRY_INITIAL_BACKOFF_MS` with exponential growth capped by `BGE_ROUTER_RETRY_MAX_BACKOFF_MS`). When retries are exhausted, the upstream enters cooldown for `BGE_ROUTER_COOLDOWN_SECS` and is excluded from `pick`/`pick_gpu`/`pick_cpu` until the cooldown expires. Cooldown state lives in `PoolSnapshot` and is preserved while the upstream address remains present in DNS.
 
 **Request body buffering:** The request body is buffered once (required for both the CPU race and the sequential-timeout retry). Response body is streamed without intermediate buffering. Once any bytes have been streamed to the client, retry is suppressed.
 
