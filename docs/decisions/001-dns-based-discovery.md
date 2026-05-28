@@ -66,10 +66,15 @@ semantics described in [DNS Discovery](../dns-discovery.md):
   defaults). This is acceptable because the GPU cold-start path is dominated
   by model load time (minutes), not by the router's discovery window.
 
-- **DNS failure removes upstreams.** A transient DNS lookup failure returns
-  an empty set, which clears the pool for that name on that cycle. A
-  persistent DNS outage drains both pools. Monitoring `/router/health` for
-  empty pools and alerting is the mitigation.
+- **DNS failure preserves the last-known-good pool.** A transient DNS lookup
+  failure (NXDOMAIN, timeout, network error) is distinguished from a
+  successful empty response: on failure the pool is preserved at its
+  last-known-good state, and the independent health poller marks any
+  genuinely-dead address `Fail` within one cycle. Only a *successful* DNS
+  response that returns zero addresses (e.g. ECS scale-to-zero) clears the
+  pool. A persistent DNS outage therefore keeps routing to the last-known
+  addresses rather than draining the pools. Monitoring `/router/health` for
+  empty or stale pools and alerting is the mitigation.
 
 - **No fine-grained control over individual upstream weights.** All upstreams
   resolving from the same DNS name are treated equally (tiebreaking only by

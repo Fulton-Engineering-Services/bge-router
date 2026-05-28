@@ -120,11 +120,16 @@ independently:
 1. proxy::forward_with_retry(GPU) wrapped in tokio::time::timeout(per_upstream)
 2. If GPU OK and not 5xx → return
 3. If GPU times out / errors / returns 5xx
+   → retry a second distinct GPU upstream (up to MAX_GPU_ATTEMPTS = 2), each
+     wrapped in tokio::time::timeout(per_upstream)
+4. If all GPU attempts fail
    → proxy::forward_with_retry(CPU) wrapped in tokio::time::timeout(per_upstream)
-4. If CPU also fails or times out → 503
+5. If CPU also fails or times out → 503
 ```
 
-Worst-case latency is `2 × control_timeout`. Default 1 s × 2 = 2 s.
+The path tries up to `MAX_GPU_ATTEMPTS = 2` distinct GPU upstreams before
+falling through to one CPU attempt, so worst-case latency is up to
+`3 × control_timeout`. Default 1 s × 3 = 3 s.
 
 | Trigger | Log level | Log message |
 |---------|-----------|-------------|
@@ -191,8 +196,12 @@ the hedged race (`body.clone()` per upstream) and the sequential timeout
 need a re-readable body. Axum's default body type is a one-shot stream;
 buffering converts it to `Bytes` that is cheap to clone (refcounted).
 
-The buffer ceiling is 32 MiB; requests exceeding this limit receive 400
-Bad Request before routing is attempted.
+There is currently **no enforced body-size ceiling** on this path. The handler
+takes the whole `Request<Body>` (not a size-limited extractor) and no
+`DefaultBodyLimit` / `RequestBodyLimitLayer` is installed, so `collect()` is
+unbounded. The handler returns `400 Bad Request` only when the body stream
+itself fails to read - not as a size-limit rejection. To impose a ceiling, add
+a body-limit layer explicitly.
 
 ## Observing Race Outcomes
 

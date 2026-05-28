@@ -107,7 +107,10 @@ pub struct UpstreamInfo {
     pub queue_depth: u32,
     /// Number of live worker threads on the upstream.
     pub live_workers: u32,
-    /// Monotonic timestamp of the last successful health poll.
+    /// Monotonic timestamp of the most recent health poll that returned a
+    /// result for this address. Updated on every matched poll regardless of
+    /// status (`Ok`, `Fail`, or `Unknown`); preserved unchanged only when a
+    /// poll cycle produced no result for this address at all.
     pub last_seen: Instant,
     /// End of circuit-breaker cooldown. While this is in the future, the
     /// upstream is excluded from routing decisions.

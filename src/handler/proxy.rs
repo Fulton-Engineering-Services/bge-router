@@ -43,7 +43,10 @@ pub async fn handle_proxy(
     let headers = req.headers().clone();
 
     // Buffer the body so we can retry on CPU if the GPU upstream fails.
-    // Limit to 32 MiB; larger requests are rejected with 413.
+    // No body-size limit is enforced here: this handler takes the whole
+    // Request<Body> (not a size-limited extractor) and no DefaultBodyLimit
+    // layer is installed, so collect() is unbounded. A failure to read the
+    // body stream returns 400 BAD_REQUEST.
     let body = match req.into_body().collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {

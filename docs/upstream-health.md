@@ -96,22 +96,29 @@ an upstream that might not respond.
 
 ## Stale Upstream Detection via last_seen
 
-Every `UpstreamInfo` stores a `last_seen: Instant` field — the monotonic
-timestamp when the most recent **successful** health poll was completed. On a
-failed poll, `last_seen` is not updated (the previous value is preserved via
-`upstream.clone()` in `update_pool`).
+Every `UpstreamInfo` stores a `last_seen: Instant` field - the monotonic
+timestamp of the most recent health poll that returned a result for this
+address. `update_pool` bumps `last_seen` to `now` on **every** matched poll
+regardless of the polled status (`Ok`, `Fail`, or `Unknown`); it is **not**
+gated on a successful poll. The previous value is preserved (via
+`upstream.clone()` in `update_pool`) only when a poll cycle produced no result
+for the address at all - which does not happen for an address that is in the
+snapshot, since every snapshot address is polled each cycle.
 
 The `last_seen_secs_ago` field in the `/router/health` response exposes this
 value as a floating-point number of elapsed seconds:
 
 ```json
-{ "addr": "10.0.1.5:8081", "status": "fail", "last_seen_secs_ago": 47.3 }
+{ "addr": "10.0.1.5:8081", "status": "fail", "last_seen_secs_ago": 5.0 }
 ```
 
-A large `last_seen_secs_ago` value (e.g. > 30 s) on a `fail` upstream
-indicates prolonged unreachability — the upstream may have crashed or been
-deregistered from DNS before the router noticed. This field is a useful
-starting point when investigating why an upstream is excluded from routing.
+Because every poll cycle that includes an address bumps its `last_seen`, the
+value normally stays below one poll interval (default 5 s) for any upstream in
+the snapshot - even a `fail` one, which keeps being polled. A large
+`last_seen_secs_ago` therefore points to the health-poll task itself stalling
+(or an address only just discovered and not yet polled), rather than to an
+individual upstream returning errors. This field is a useful starting point
+when investigating why the snapshot looks stale.
 
 Alerting on `last_seen_secs_ago` is a future enhancement; today, the value
 is diagnostic-only (visible in `/router/health` and indirectly through
@@ -154,5 +161,5 @@ Key diagnostic signals from `/router/health`:
 |-----------|---------------|
 | `gpu_upstreams: []` | GPU pool empty — check DNS resolution and ECS task count |
 | Any upstream `status: "unknown"` | First poll not yet completed — wait `health_poll_secs` |
-| `last_seen_secs_ago` > 30 on a `fail` upstream | Upstream has been unreachable for multiple poll cycles — check ECS task health |
+| `last_seen_secs_ago` > 30 on any upstream | The health-poll task may be stalled (every snapshot address is normally polled each cycle) - check router logs and event-loop health |
 | All upstreams `status: "loading"` | All upstreams initialising — check bge-m3 startup logs |

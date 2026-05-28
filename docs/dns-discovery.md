@@ -25,7 +25,7 @@ The discovery loop distinguishes three outcomes per lookup:
 |---|---|---|
 | `Resolved(some addrs)` | DNS returned ≥1 A record | Merge with existing pool (see below) |
 | `Resolved(empty)` | DNS returned 0 A records (legitimate scale-to-zero) | Clear the pool |
-| `Failed` | NXDOMAIN, timeout, or network error | **Preserve** the previous pool; logs `WARN` |
+| `Failed` | NXDOMAIN, timeout, or network error | **Preserve** the previous pool; logs `INFO` per name (`WARN` only when both pools fail in the same refresh) |
 
 Preserving the pool on `Failed` is what makes the router resilient to
 transient DNS hiccups: the health poller continues running against the
@@ -124,7 +124,7 @@ Individual per-name DNS lookup failures are logged at INFO level. Only when
 
 ```
 INFO  dns_name="bge-m3-gpu" err="..." "DNS lookup failed"
-WARN  gpu_dns="bge-m3-gpu" cpu_dns="bge-m3" "All upstream DNS lookups failed; ..."
+WARN  gpu_dns="bge-m3-gpu" cpu_dns="bge-m3-cpu" "All upstream DNS lookups failed; ..."
 ```
 
 ## Scale-to-Zero Behaviour
@@ -163,11 +163,13 @@ negligible.
 ## DNS Failure Handling
 
 A DNS lookup failure (network-level error, not an empty-but-valid response)
-is logged as `WARN`, and the merge step **preserves** the previous pool for
-that name:
+for a single name is logged at `INFO`, and the merge step **preserves** the
+previous pool for that name. A `WARN` is emitted only when **both** pools fail
+to resolve in the same refresh:
 
 ```
-WARN dns_name="bge-m3-gpu" err="..." DNS lookup failed
+INFO dns_name="bge-m3-gpu" err="..." "DNS lookup failed"
+WARN gpu_dns="bge-m3-gpu" cpu_dns="bge-m3-cpu" "All upstream DNS lookups failed; pool preserved at last-known-good state"
 ```
 
 The health poller keeps probing the existing addresses. Any address that is
@@ -193,7 +195,8 @@ it's still alive) or gets marked `Fail` by the health poller (if it's not).
 > last-known-good addresses. If those addresses are still reachable, traffic
 > continues uninterrupted. If they have gone away, the health poller marks
 > them `Fail` within ~5 s and routing falls back as normal. Monitor
-> `/router/health` and the `DNS discovery degraded` WARN to detect the
+> `/router/health` and the `DNS discovery failed: no upstream pools populated`
+> WARN (emitted on the healthy -> unhealthy transition) to detect the
 > condition.
 
 ## Local Development and Testing

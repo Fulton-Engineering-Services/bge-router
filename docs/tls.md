@@ -91,11 +91,36 @@ outbound TLS on a plain-HTTP inbound listener.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BGE_ROUTER_UPSTREAM_TLS` | unset | Set to `1`, `true`, or `yes` to use HTTPS for all upstream bge-m3 connections. The system CA store is used for certificate validation. |
-| `BGE_ROUTER_UPSTREAM_CA_BUNDLE` | unset | Path to a CA bundle PEM to trust for upstream connections. Use when bge-m3 instances present self-signed or internal CA certificates. Must be used together with `BGE_ROUTER_UPSTREAM_TLS=1`. |
+| `BGE_ROUTER_UPSTREAM_CA_BUNDLE` | unset | Path to a CA bundle PEM to trust for upstream connections. Use when bge-m3 instances present self-signed or internal CA certificates. Must be used together with `BGE_ROUTER_UPSTREAM_TLS=1`. **Also disables hostname verification on upstream connections - see the security note below.** |
 
 Setting `BGE_ROUTER_UPSTREAM_CA_BUNDLE` without `BGE_ROUTER_UPSTREAM_TLS=1` logs a
-startup `WARN` — the bundle is loaded into the reqwest client but all upstream
+startup `WARN` - the bundle is loaded into the reqwest client but all upstream
 connections still use `http://`.
+
+### Security note: CA bundle disables hostname verification
+
+When `BGE_ROUTER_UPSTREAM_CA_BUNDLE` is set, `AppState::new` (`src/state.rs`)
+builds the shared `reqwest::Client` with both `.add_root_certificate(cert)` and
+`.danger_accept_invalid_hostnames(true)`, and emits a startup `WARN`:
+
+```
+WARN upstream TLS: hostname verification disabled for upstream connections (CA trust enforced); required for dynamic ECS task IPs
+```
+
+The router still validates that each upstream certificate **chains to the
+trusted CA bundle**, but it does **not** verify that the certificate's
+SAN/CN matches the address being dialed. This is deliberate: upstream bge-m3
+tasks are reached by raw ECS task IP (`https://10.x.x.x:8081`), which never
+matches the SAN on the shared internal leaf certificate, so standard hostname
+verification would always fail.
+
+The trade-off: any peer presenting a certificate signed by the trusted CA is
+accepted regardless of which host/IP it claims to be. This is acceptable inside
+a private VPC where the internal CA is the trust anchor, but it means upstream
+connections are **not** protected against a MITM that holds a different
+CA-signed certificate. When `BGE_ROUTER_UPSTREAM_TLS=1` is set **without** a CA
+bundle, the system CA store is used and hostname verification is **not**
+disabled.
 
 ### What "upstream TLS" covers
 
@@ -240,7 +265,7 @@ configuration is required.
 | `BGE_ROUTER_TLS_CERT_PATH` | unset | Path to the TLS certificate PEM for the inbound listener. Requires `--features tls` at build time. Must be set together with `BGE_ROUTER_TLS_KEY_PATH`, or both must be absent. |
 | `BGE_ROUTER_TLS_KEY_PATH` | unset | Path to the TLS private key PEM for the inbound listener. Must be set together with `BGE_ROUTER_TLS_CERT_PATH`, or both must be absent. |
 | `BGE_ROUTER_UPSTREAM_TLS` | unset | Set to `1`, `true`, or `yes` to use HTTPS for all upstream bge-m3 connections. Does **not** require `--features tls`. |
-| `BGE_ROUTER_UPSTREAM_CA_BUNDLE` | unset | Path to a CA bundle PEM for validating upstream bge-m3 certificates. Used together with `BGE_ROUTER_UPSTREAM_TLS`. A startup `WARN` is logged if this is set without `UPSTREAM_TLS`. |
+| `BGE_ROUTER_UPSTREAM_CA_BUNDLE` | unset | Path to a CA bundle PEM for validating upstream bge-m3 certificates. Used together with `BGE_ROUTER_UPSTREAM_TLS`. Disables upstream hostname verification (CA chain still enforced) - see the security note in section 2. A startup `WARN` is logged if this is set without `UPSTREAM_TLS`. |
 
 ---
 

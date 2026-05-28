@@ -67,10 +67,11 @@ flowchart LR
 
 1. Try GPU with `BGE_ROUTER_CONTROL_TIMEOUT_MS` hard timeout.
 2. If GPU succeeds (non-5xx) → return immediately.
-3. If GPU fails, times out, or returns 5xx → try CPU with the same timeout.
-4. If CPU also fails → 503.
+3. If GPU fails, times out, or returns 5xx → try a second distinct GPU upstream (up to 2 GPU attempts), each with the same timeout.
+4. If all GPU attempts fail → try CPU with the same timeout.
+5. If CPU also fails → 503.
 
-Worst-case latency: `2 × control_timeout` (default 2 s).
+Worst-case latency: up to `3 × control_timeout` (2 GPU attempts + 1 CPU, default 3 s).
 
 ### 503 behavior
 

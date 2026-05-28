@@ -38,8 +38,10 @@ pub enum RoutePolicy {
     /// control-plane routes where fast failure detection matters more than
     /// hiding GPU latency.
     SequentialTimeout {
-        /// Per-upstream hard timeout.  Each of GPU and CPU is bounded
-        /// independently; total worst-case is `2 × per_upstream`.
+        /// Per-upstream hard timeout.  Each attempt is bounded independently.
+        /// The sequential path tries up to `MAX_GPU_ATTEMPTS` (2) distinct GPU
+        /// upstreams before falling through to one CPU attempt, so the total
+        /// worst-case is up to `3 × per_upstream`.
         per_upstream: Duration,
     },
 }

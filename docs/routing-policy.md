@@ -8,10 +8,18 @@ path, and never blocks (the snapshot is read via a lock-free `ArcSwap` load).
 ## Priority Order
 
 ```
-1. GPU pool  — pick the Ok upstream with the lowest queue_depth
-2. CPU pool  — pick the Ok upstream with the lowest queue_depth
-3. No match  — return 503 Service Unavailable
+1. GPU pool  - pick the Ok upstream with the lowest queue_depth
+2. CPU pool  - pick the Ok upstream with the lowest queue_depth
+3. GPU pool  - pick the Loading upstream with live_workers > 0, lowest queue_depth
+4. CPU pool  - pick the Loading upstream with live_workers > 0, lowest queue_depth
+5. No match  - return 503 Service Unavailable
 ```
+
+Tiers 3-4 are a last-resort idle-deadlock breaker: an `idle`/`loading`
+upstream that still has live workers is routable so a request can wake it and
+trigger a model reload, rather than the router never sending traffic so the
+upstream never leaves idle. `Loading` upstreams with `live_workers == 0`
+(still starting), and all `Fail`/`Unknown` upstreams, are never selected.
 
 GPU is always preferred over CPU regardless of queue depth. A GPU upstream
 with 20 queued requests is still chosen over an idle CPU upstream. This is
@@ -23,15 +31,19 @@ an idle CPU upstream under most real workloads.
 
 | `UpstreamStatus` | Source bge-m3 status strings | Eligible for routing |
 |------------------|------------------------------|----------------------|
-| `Ok`             | `"ok"`, `"warn"`             | Yes                  |
-| `Loading`        | `"loading"`, `"idle"`        | No                   |
+| `Ok`             | `"ok"`, `"warn"`             | Yes (tiers 1-2)      |
+| `Loading`        | `"loading"`, `"idle"`        | Last resort - only with `live_workers > 0` (tiers 3-4) |
 | `Fail`           | `"fail"`, non-2xx HTTP       | No                   |
 | `Unknown`        | no poll yet, parse error     | No                   |
 
 `"warn"` (some workers exited) maps to `Ok` because the upstream is still
 accepting requests. `"idle"` (models unloaded after idle timeout) maps to
-`Loading` because a request would trigger a reload — the upstream is
-temporarily unavailable.
+`Loading`: a request would trigger a reload, so `Loading` upstreams are not
+first-class routable. They are still selected as a **last resort** (tiers 3-4)
+when no `Ok` upstream exists and the `Loading` upstream reports
+`live_workers > 0`, which breaks the deadlock where an idle upstream never
+receives traffic and so never reloads. A `Loading` upstream with
+`live_workers == 0` is still starting and is never selected.
 
 A failed health poll (connection refused, timeout, non-2xx response) sets
 the upstream to `Fail`. An upstream whose address just appeared in DNS and
@@ -39,8 +51,9 @@ hasn't been polled yet is `Unknown`. Neither is routed to.
 
 ## Tiebreaking Within a Pool
 
-Within each pool, `pick_from_pool` calls `min_by_key(|u| u.queue_depth)` on
-the Ok-filtered set. Upstreams with equal queue depth are arbitrarily ordered
+Within each pool, the tier selectors (`pick_ok`, `pick_loading`, and the
+combined `pick_tier`) call `min_by_key(|u| u.queue_depth)` on the eligible set.
+Upstreams with equal queue depth are arbitrarily ordered
 by their position in the `Vec` (insertion order from DNS discovery). There is
 no random selection or weighted routing — the same upstream wins ties
 deterministically.
@@ -73,15 +86,18 @@ the first DNS refresh cycle completes and at least one health poll succeeds —
 typically within `dns_refresh_secs + health_poll_secs` seconds (35 s at
 defaults).
 
-If both DNS names fail to resolve (NXDOMAIN or network error), the pools
-stay empty from the last successful merge. Addresses that were previously in
-the snapshot but disappeared from DNS are removed on the next successful
-refresh. A persistent DNS failure leaves the pools unchanged (neither growing
-nor shrinking) until DNS recovers.
+If both DNS names fail to resolve (NXDOMAIN or network error), the pools are
+**preserved** at their last successful merge - a DNS *error* never clears a
+pool. Addresses that have genuinely disappeared are dropped only on the next
+*successful* refresh; in the meantime the health poller marks any dead address
+`Fail` and removes it from routing. A persistent DNS failure therefore leaves
+the pools pinned to their last-known-good addresses until DNS recovers.
 
-When the GPU service is scaled to zero, the GPU DNS name returns NXDOMAIN
-or an empty response. The GPU pool empties on the next DNS refresh, and all
-traffic routes to CPU.
+When the GPU service is scaled to zero, the GPU DNS name returns either an
+empty (but successful) response or NXDOMAIN. A *successful empty* response
+clears the GPU pool on the next DNS refresh; an NXDOMAIN/error preserves it,
+and the health poller marks the now-dead addresses `Fail` within one poll
+cycle. Either way, all traffic routes to CPU.
 
 ## Atomic Snapshot Updates
 
