@@ -20,7 +20,8 @@ env:
 jobs:
   check:
     name: Check & Lint
-    runs-on: ubuntu-latest
+    runs-on: arc-fes
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
@@ -38,7 +39,8 @@ jobs:
 
   test:
     name: Test (${{ matrix.toolchain }})
-    runs-on: ubuntu-latest
+    runs-on: arc-fes
+    timeout-minutes: 15
     continue-on-error: ${{ matrix.toolchain == 'beta' }}
     strategy:
       matrix:
@@ -57,7 +59,8 @@ jobs:
 
   msrv:
     name: MSRV (1.95)
-    runs-on: ubuntu-latest
+    runs-on: arc-fes
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
@@ -69,14 +72,16 @@ jobs:
 
   deny:
     name: Supply Chain Security
-    runs-on: ubuntu-latest
+    runs-on: arc-fes
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: EmbarkStudios/cargo-deny-action@a531616d8ce3b9177443e48a1159bc945a099823  # v2
 
   docs:
     name: Rustdoc
-    runs-on: ubuntu-latest
+    runs-on: arc-fes
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
@@ -88,7 +93,8 @@ jobs:
 
   license-headers:
     name: License Headers
-    runs-on: ubuntu-latest
+    runs-on: arc-fes
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - name: Install hawkeye
@@ -106,7 +112,8 @@ jobs:
 
   test-tls:
     name: Test (--features tls)
-    runs-on: ubuntu-latest
+    runs-on: arc-fes
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9  # stable
